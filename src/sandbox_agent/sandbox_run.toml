@@ -1,0 +1,31 @@
+schema_version = 1
+
+agents = [
+  "sandbox_spec.toml",
+  "../company_header_agent/sandbox_spec.toml",
+]
+
+[execution]
+mode = "entry_agent"
+entry_agent = "agent_1"
+order = [
+  "agent_1",
+  "company_header_agent",
+]
+
+[network]
+enabled = true
+internal = true
+subnet = "172.28.0.0/24"
+
+[squid_proxy]
+default_allowed_domains = []
+default_allowed_ip_addresses = []
+
+[haproxy]
+backend_host = "host.docker.internal"
+default_ports = []
+
+[mcp_sidecar]
+default_tools = []
+default_resources = []

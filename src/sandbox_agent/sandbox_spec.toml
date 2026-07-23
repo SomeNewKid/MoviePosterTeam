@@ -1,0 +1,28 @@
+schema_version = 1
+agent_id = "agent_1"
+module = "sandbox_agent"
+
+container_capabilities = [
+  "network",
+]
+
+application_capabilities = [
+  "mcp_client",
+  "openai_agents",
+]
+
+[squid_proxy]
+allowed_domains = []
+allowed_ip_addresses = []
+
+[haproxy]
+ports = [
+  3306,
+]
+
+[mcp_sidecar]
+tools = [
+  "get_html_element_name",
+  "get_active_items",
+]
+resources = []

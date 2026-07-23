@@ -1,0 +1,22 @@
+schema_version = 1
+agent_id = "company_header_agent"
+module = "company_header_agent"
+
+container_capabilities = [
+  "network",
+]
+
+application_capabilities = [
+  "mcp_client",
+  "openai_agents",
+]
+
+[squid_proxy]
+allowed_domains = []
+allowed_ip_addresses = []
+
+[mcp_sidecar]
+tools = []
+resources = [
+  "company_name",
+]
