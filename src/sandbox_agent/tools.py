@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
-import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from a2a_support.client import (
+    read_agent_card,
+    read_agent_endpoint_url,
+    send_text_message,
+)
+
 _OUTPUT_DIRECTORY = Path("/sandbox-output")
 _SITE_DIRECTORY = _OUTPUT_DIRECTORY / "site"
 _ANSWER_FILE_PATH = _OUTPUT_DIRECTORY / "answer.txt"
+_SHARED_DIRECTORY_ENVIRONMENT_VARIABLE = "SANDBOX_SHARED_DIR"
+_DEFAULT_SHARED_DIRECTORY = Path("/sandbox-shared")
 _MCP_SIDECAR_URL_ENVIRONMENT_VARIABLE = "MCP_SIDECAR_URL"
 _MCP_ACTIVE_ITEMS_TOOL_NAME = "get_active_items"
 _MCP_HTML_ELEMENT_TOOL_NAME = "get_html_element_name"
@@ -20,11 +29,14 @@ _MCP_MICROSOFT_DOCS_FETCH_TOOL_NAME = "microsoft_docs_fetch"
 _MCP_MICROSOFT_CODE_SAMPLE_SEARCH_TOOL_NAME = "microsoft_code_sample_search"
 _MCP_JINA_READ_URL_TOOL_NAME = "jina_read_url"
 _MCP_RUN_PYTHON_SCRIPT_TOOL_NAME = "run_python_script"
+_MCP_GENERATE_IMAGE_TOOL_NAME = "generate_image"
 _MCP_ANSWER_FORMAT_RESOURCE_URI = "mcp-sidecar://instructions/answer-format.md"
-_COMPANY_HEADER_AGENT_CARD_URL_ENVIRONMENT_VARIABLE = "COMPANY_HEADER_AGENT_CARD_URL"
-_DEFAULT_COMPANY_HEADER_AGENT_CARD_URL = (
-    "http://company-header-agent:8080/.well-known/agent.json"
-)
+_WRITER_AGENT_URL_ENVIRONMENT_VARIABLE = "WRITER_AGENT_URL"
+_DEFAULT_WRITER_AGENT_URL = "http://writer-agent:8080"
+_ARTIST_AGENT_URL_ENVIRONMENT_VARIABLE = "ARTIST_AGENT_URL"
+_DEFAULT_ARTIST_AGENT_URL = "http://artist-agent:8080"
+_POSTER_AGENT_URL_ENVIRONMENT_VARIABLE = "POSTER_AGENT_URL"
+_DEFAULT_POSTER_AGENT_URL = "http://poster-agent:8080"
 _HTML5_ELEMENTS = frozenset(
     {
         "a",
@@ -199,24 +211,139 @@ def run_python_script(
     return _call_mcp_sidecar_tool(_MCP_RUN_PYTHON_SCRIPT_TOOL_NAME, arguments)
 
 
+def generate_image(prompt: str, image_reference_base64: str | None = None) -> str:
+    """Generate an image through the MCP sidecar."""
+    arguments: dict[str, object] = {"prompt": prompt}
+    if image_reference_base64 is not None:
+        arguments["image_reference_base64"] = image_reference_base64
+
+    return _call_mcp_sidecar_tool(_MCP_GENERATE_IMAGE_TOOL_NAME, arguments)
+
+
+def generate_image_artifact(
+    prompt: str,
+    file_name: str,
+    image_reference_base64: str | None = None,
+) -> dict[str, object]:
+    """Generate an image through MCP and save it into the sandbox web root."""
+    try:
+        result_text = generate_image(prompt, image_reference_base64)
+        result = _read_generate_image_result(result_text)
+        image_base64 = result["image_base64"]
+        image_path = _resolve_site_path(file_name)
+        image_bytes = _decode_base64_image(image_base64)
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(image_bytes)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return _artifact_failure(file_name)
+
+    if not image_path.exists():
+        return _artifact_failure(file_name)
+
+    return {
+        "success": True,
+        "file_name": file_name,
+        "message": f"Created {file_name}",
+        "mime_type": result.get("mime_type", "image/png"),
+        "model": result.get("model", ""),
+        "size": result.get("size", ""),
+        "byte_count": len(image_bytes),
+    }
+
+
+def get_movie_details(
+    brief: str = "Create an original movie concept for a striking poster.",
+) -> str:
+    """Return structured movie details from the Writer Agent."""
+    writer_base_url = os.environ.get(
+        _WRITER_AGENT_URL_ENVIRONMENT_VARIABLE,
+        _DEFAULT_WRITER_AGENT_URL,
+    )
+    agent_card = read_agent_card(writer_base_url)
+    endpoint_url = read_agent_endpoint_url(agent_card)
+    return send_text_message(
+        endpoint_url,
+        brief,
+        request_id="writer-agent-request",
+    )
+
+
+def get_movie_illustration(movie_details: str) -> str:
+    """Return generated illustration JSON from the Artist Agent."""
+    artist_base_url = os.environ.get(
+        _ARTIST_AGENT_URL_ENVIRONMENT_VARIABLE,
+        _DEFAULT_ARTIST_AGENT_URL,
+    )
+    agent_card = read_agent_card(artist_base_url)
+    endpoint_url = read_agent_endpoint_url(agent_card)
+    return send_text_message(
+        endpoint_url,
+        movie_details,
+        request_id="artist-agent-request",
+    )
+
+
+def get_movie_poster(poster_request: str) -> str:
+    """Return generated poster JSON from the Poster Agent."""
+    poster_base_url = os.environ.get(
+        _POSTER_AGENT_URL_ENVIRONMENT_VARIABLE,
+        _DEFAULT_POSTER_AGENT_URL,
+    )
+    agent_card = read_agent_card(poster_base_url)
+    endpoint_url = read_agent_endpoint_url(agent_card)
+    return send_text_message(
+        endpoint_url,
+        poster_request,
+        request_id="poster-agent-request",
+    )
+
+
+def save_image(file_name: str, image_base64: str) -> dict[str, bool | str]:
+    """Save a base64-encoded image into the sandbox web root."""
+    try:
+        image_path = _resolve_site_path(file_name)
+        image_bytes = _decode_base64_image(image_base64)
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(image_bytes)
+    except (OSError, ValueError):
+        return _failure("create", file_name)
+
+    if not image_path.exists():
+        return _failure("create", file_name)
+
+    return {
+        "success": True,
+        "message": f"Created {file_name}",
+    }
+
+
+def save_shared_image_artifact(
+    file_name: str,
+    artifact_path: str,
+) -> dict[str, bool | str]:
+    """Copy a shared image artifact into the sandbox web root."""
+    try:
+        source_path = _resolve_shared_path(artifact_path)
+        image_path = _resolve_site_path(file_name)
+        image_bytes = source_path.read_bytes()
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(image_bytes)
+    except OSError:
+        return _failure("create", file_name)
+
+    if not image_path.exists():
+        return _failure("create", file_name)
+
+    return {
+        "success": True,
+        "message": f"Created {file_name}",
+    }
+
+
 def get_answer_format() -> str:
     """Read the required answer format resource from the MCP sidecar."""
     sidecar_url = _get_mcp_sidecar_url()
     return _call_mcp_resource(sidecar_url, _MCP_ANSWER_FORMAT_RESOURCE_URI)
-
-
-def add_company_header(html_document: str) -> str:
-    """Ask the company header A2A agent to return finished HTML."""
-    card_url = os.environ.get(
-        _COMPANY_HEADER_AGENT_CARD_URL_ENVIRONMENT_VARIABLE,
-        _DEFAULT_COMPANY_HEADER_AGENT_CARD_URL,
-    )
-    agent_card = _read_a2a_agent_card(card_url)
-    endpoint_url = agent_card.get("url")
-    if not isinstance(endpoint_url, str) or not endpoint_url:
-        raise RuntimeError("Company header Agent Card does not contain a URL.")
-
-    return _send_a2a_html_message(endpoint_url, html_document)
 
 
 def validate_html5_element(element_name: str) -> dict[str, bool | str]:
@@ -267,6 +394,16 @@ def _resolve_site_path(file_name: str) -> Path:
     return _resolve_child_path(_SITE_DIRECTORY, file_name)
 
 
+def _resolve_shared_path(artifact_path: str) -> Path:
+    shared_directory = Path(
+        os.environ.get(
+            _SHARED_DIRECTORY_ENVIRONMENT_VARIABLE,
+            str(_DEFAULT_SHARED_DIRECTORY),
+        )
+    )
+    return _resolve_child_path(shared_directory, artifact_path)
+
+
 def _call_mcp_html_element_tool(sidecar_url: str) -> str:
     return _call_mcp_tool(sidecar_url, _MCP_HTML_ELEMENT_TOOL_NAME, {})
 
@@ -280,74 +417,6 @@ def _call_mcp_resource(sidecar_url: str, resource_uri: str) -> str:
     import anyio
 
     return anyio.run(_call_mcp_resource_async, sidecar_url, resource_uri)
-
-
-def _read_a2a_agent_card(card_url: str) -> dict[str, object]:
-    with _urlopen_no_proxy(card_url, timeout=10) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    if not isinstance(data, dict):
-        raise RuntimeError("Company header Agent Card must be a JSON object.")
-
-    return data
-
-
-def _send_a2a_html_message(endpoint_url: str, html_document: str) -> str:
-    request_body = {
-        "jsonrpc": "2.0",
-        "id": "company-header-request",
-        "method": "message/send",
-        "params": {
-            "message": {
-                "role": "user",
-                "parts": [
-                    {
-                        "kind": "text",
-                        "text": html_document,
-                        "metadata": {
-                            "mimeType": "text/html",
-                        },
-                    }
-                ],
-            }
-        },
-    }
-    request = urllib.request.Request(
-        endpoint_url,
-        data=json.dumps(request_body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with _urlopen_no_proxy(request, timeout=60) as response:
-        response_data = json.loads(response.read().decode("utf-8"))
-    if not isinstance(response_data, dict):
-        raise RuntimeError("Company header A2A response must be a JSON object.")
-    if "error" in response_data:
-        raise RuntimeError(f"Company header A2A error: {response_data['error']}")
-
-    return _read_a2a_message_text(response_data.get("result"))
-
-
-def _read_a2a_message_text(result: object) -> str:
-    if not isinstance(result, dict):
-        raise RuntimeError("Company header A2A result must be an object.")
-
-    parts = result.get("parts")
-    if not isinstance(parts, list):
-        raise RuntimeError("Company header A2A result did not contain parts.")
-
-    for part in parts:
-        if isinstance(part, dict) and isinstance(part.get("text"), str):
-            return str(part["text"])
-
-    raise RuntimeError("Company header A2A result did not contain text.")
-
-
-def _urlopen_no_proxy(
-    url: str | urllib.request.Request,
-    timeout: int,
-) -> Any:
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    return opener.open(url, timeout=timeout)
 
 
 def _get_mcp_sidecar_url() -> str:
@@ -446,6 +515,44 @@ def _normalize_html_element_name(element_name: str) -> str:
     return name.strip()
 
 
+def _decode_base64_image(image_base64: str) -> bytes:
+    encoded_image = image_base64.strip()
+    if encoded_image.lower().startswith("data:") and "," in encoded_image:
+        _prefix, encoded_image = encoded_image.split(",", 1)
+    if not encoded_image:
+        raise ValueError("Image data must not be empty.")
+
+    try:
+        return base64.b64decode(encoded_image, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("Image data must be valid base64.") from error
+
+
+def _read_generate_image_result(result_text: str) -> dict[str, str]:
+    result = json.loads(result_text)
+    if not isinstance(result, dict):
+        raise ValueError("generate_image returned an unexpected result.")
+
+    image_base64 = result.get("image_base64")
+    if not isinstance(image_base64, str) or not image_base64:
+        raise ValueError("generate_image returned no image_base64 value.")
+
+    return {
+        "image_base64": image_base64,
+        "mime_type": _read_optional_string(result, "mime_type"),
+        "model": _read_optional_string(result, "model"),
+        "size": _read_optional_string(result, "size"),
+    }
+
+
+def _read_optional_string(data: dict[str, object], key: str) -> str:
+    value = data.get(key)
+    if isinstance(value, str):
+        return value
+
+    return ""
+
+
 def _resolve_child_path(parent: Path, child_name: str) -> Path:
     child_path = parent / child_name
     resolved_parent = parent.resolve(strict=False)
@@ -470,3 +577,7 @@ def _failure(action: str, file_name: str) -> dict[str, bool | str]:
         "success": False,
         "message": f"Failed to {action} `{file_name}",
     }
+
+
+def _artifact_failure(file_name: str) -> dict[str, object]:
+    return dict(_failure("create", file_name))

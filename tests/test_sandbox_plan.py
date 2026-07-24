@@ -41,10 +41,15 @@ def test_agent_spec_combines_capabilities_without_duplicates() -> None:
         agent_id="agent_1",
         module="sandbox_agent",
         container_capabilities=("network", "mcp_client"),
-        application_capabilities=("mcp_client", "openai_agents"),
+        application_capabilities=("image_artifacts", "mcp_client", "openai_agents"),
     )
 
-    assert spec.capabilities == ("network", "mcp_client", "openai_agents")
+    assert spec.capabilities == (
+        "network",
+        "mcp_client",
+        "image_artifacts",
+        "openai_agents",
+    )
 
 
 def test_shared_mcp_plan_unions_default_and_agent_exposure() -> None:
@@ -90,6 +95,23 @@ def test_shared_mcp_plan_is_disabled_without_exposure() -> None:
     assert not plan.enabled
     assert plan.tools == ()
     assert plan.resources == ()
+
+
+def test_shared_mcp_plan_carries_sidecar_capabilities() -> None:
+    """Verify MCP sidecar capabilities are carried into the resolved plan."""
+    spec = McpSidecarSpec(
+        default_tools=("get_active_items",),
+        container_capabilities=("network",),
+        application_capabilities=("openai",),
+    )
+
+    plan = build_mcp_sidecar_plan(spec, ())
+
+    assert plan.enabled
+    assert plan.container_capabilities == ("network",)
+    assert plan.application_capabilities == ("openai",)
+    assert plan.capabilities == ("network", "openai")
+    assert plan.allowed_domains == (".openai.com",)
 
 
 def test_squid_plan_combines_default_and_agent_allowlists() -> None:
@@ -194,6 +216,8 @@ def test_load_sandbox_run_spec_reads_run_level_defaults(tmp_path: Path) -> None:
                 "[mcp_sidecar]",
                 'default_tools = ["get_active_items"]',
                 'default_resources = ["answer_format"]',
+                'container_capabilities = ["network"]',
+                'application_capabilities = ["openai"]',
             ]
         ),
         encoding="utf-8",
@@ -211,6 +235,49 @@ def test_load_sandbox_run_spec_reads_run_level_defaults(tmp_path: Path) -> None:
     assert spec.haproxy.default_ports == (3306,)
     assert spec.mcp_sidecar.default_tools == ("get_active_items",)
     assert spec.mcp_sidecar.default_resources == ("answer_format",)
+    assert spec.mcp_sidecar.container_capabilities == ("network",)
+    assert spec.mcp_sidecar.application_capabilities == ("openai",)
+
+
+def test_default_sandbox_run_spec_starts_support_agents_before_entry_agent() -> None:
+    """Verify the default run includes Writer, Artist, and Poster services."""
+    spec_path = Path("src") / "sandbox_agent" / "sandbox_run.toml"
+    repository_root = Path.cwd()
+
+    spec = load_sandbox_run_spec(spec_path)
+
+    assert spec.agent_spec_paths == (
+        repository_root / "src" / "writer_agent" / "sandbox_spec.toml",
+        repository_root / "src" / "artist_agent" / "sandbox_spec.toml",
+        repository_root / "src" / "poster_agent" / "sandbox_spec.toml",
+        repository_root / "src" / "sandbox_agent" / "sandbox_spec.toml",
+    )
+    assert spec.execution.entry_agent == "agent_1"
+    assert spec.execution.order == (
+        "writer_agent",
+        "artist_agent",
+        "poster_agent",
+        "agent_1",
+    )
+
+
+def test_default_shared_artifact_agents_declare_shared_volume() -> None:
+    """Verify agents that exchange image artifacts opt into shared storage."""
+    artist_spec = load_agent_spec(Path("src") / "artist_agent" / "sandbox_spec.toml")
+    poster_spec = load_agent_spec(Path("src") / "poster_agent" / "sandbox_spec.toml")
+    sandbox_spec = load_agent_spec(Path("src") / "sandbox_agent" / "sandbox_spec.toml")
+
+    assert "shared_volume" in artist_spec.container_capabilities
+    assert "image_artifacts" in artist_spec.application_capabilities
+    assert "shared_volume" in poster_spec.container_capabilities
+    assert "image_artifacts" in poster_spec.application_capabilities
+    assert "shared_volume" in sandbox_spec.container_capabilities
+    assert (
+        "shared_volume"
+        not in load_agent_spec(
+            Path("src") / "writer_agent" / "sandbox_spec.toml"
+        ).container_capabilities
+    )
 
 
 def test_load_sandbox_run_spec_rejects_unknown_top_level_keys(
@@ -399,7 +466,8 @@ def test_load_agent_spec_reads_split_agent_requirements(tmp_path: Path) -> None:
                 'agent_id = "agent_1"',
                 'module = "sandbox_agent"',
                 'container_capabilities = ["network"]',
-                'application_capabilities = ["mcp_client", "openai_agents"]',
+                "application_capabilities = ["
+                '"image_artifacts", "mcp_client", "openai_agents"]',
                 "",
                 "[[environment_variables]]",
                 'name = "APP_MODE"',
@@ -425,8 +493,17 @@ def test_load_agent_spec_reads_split_agent_requirements(tmp_path: Path) -> None:
     assert spec.agent_id == "agent_1"
     assert spec.module == "sandbox_agent"
     assert spec.container_capabilities == ("network",)
-    assert spec.application_capabilities == ("mcp_client", "openai_agents")
-    assert spec.capabilities == ("network", "mcp_client", "openai_agents")
+    assert spec.application_capabilities == (
+        "image_artifacts",
+        "mcp_client",
+        "openai_agents",
+    )
+    assert spec.capabilities == (
+        "network",
+        "image_artifacts",
+        "mcp_client",
+        "openai_agents",
+    )
     assert spec.environment_variables == (("APP_MODE", "test"),)
     assert spec.squid_proxy.allowed_domains == (".example.com",)
     assert spec.squid_proxy.allowed_ip_addresses == ("198.51.100.7",)
@@ -617,6 +694,7 @@ def test_build_sandbox_plan_resolves_shared_sidecars_and_agents() -> None:
         mcp_sidecar=McpSidecarSpec(
             default_tools=("get_html_element_name",),
             default_resources=("answer_format",),
+            container_capabilities=("network",),
         ),
     )
     agent_1 = AgentSpec(
@@ -745,6 +823,43 @@ def test_build_sandbox_plan_rejects_disabled_network_when_agent_needs_it() -> No
         build_sandbox_plan(run_spec, (agent,), "run-test")
 
 
+def test_build_sandbox_plan_rejects_mcp_exposure_without_network() -> None:
+    """Verify exposed MCP tools require sidecar network capability."""
+    run_spec = SandboxRunSpec(
+        schema_version=1,
+        agent_spec_paths=(Path("agent_1.toml"),),
+    )
+    agent = AgentSpec(
+        agent_id="agent_1",
+        module="sandbox_agent",
+        container_capabilities=("network",),
+        application_capabilities=("mcp_client",),
+        mcp_sidecar=AgentMcpSidecarSpec(tools=("get_active_items",)),
+    )
+
+    with pytest.raises(ValueError, match="MCP sidecar exposure requires"):
+        build_sandbox_plan(run_spec, (agent,), "run-test")
+
+
+def test_build_sandbox_plan_rejects_image_tool_without_sidecar_openai() -> None:
+    """Verify image generation exposure requires sidecar OpenAI support."""
+    run_spec = SandboxRunSpec(
+        schema_version=1,
+        agent_spec_paths=(Path("agent_1.toml"),),
+        mcp_sidecar=McpSidecarSpec(container_capabilities=("network",)),
+    )
+    agent = AgentSpec(
+        agent_id="agent_1",
+        module="sandbox_agent",
+        container_capabilities=("network",),
+        application_capabilities=("mcp_client",),
+        mcp_sidecar=AgentMcpSidecarSpec(tools=("generate_image",)),
+    )
+
+    with pytest.raises(ValueError, match="requires the openai capability"):
+        build_sandbox_plan(run_spec, (agent,), "run-test")
+
+
 def test_load_sandbox_plan_loads_run_and_agent_specs(tmp_path: Path) -> None:
     """Verify the planner can load a full run from TOML files."""
     agent_path = tmp_path / "agent_1.toml"
@@ -768,6 +883,8 @@ def test_load_sandbox_plan_loads_run_and_agent_specs(tmp_path: Path) -> None:
             [
                 "schema_version = 1",
                 'agents = ["agent_1.toml"]',
+                "[mcp_sidecar]",
+                'container_capabilities = ["network"]',
             ]
         ),
         encoding="utf-8",
@@ -907,7 +1024,10 @@ def _build_two_agent_plan() -> ResolvedSandboxPlan:
             backend_host="host.docker.internal",
             default_ports=(3306,),
         ),
-        mcp_sidecar=McpSidecarSpec(default_tools=("get_html_element_name",)),
+        mcp_sidecar=McpSidecarSpec(
+            default_tools=("get_html_element_name",),
+            container_capabilities=("network",),
+        ),
     )
     agent_1 = AgentSpec(
         agent_id="agent_1",

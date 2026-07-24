@@ -1,6 +1,6 @@
 schema_version = 1
-agent_id = "agent_1"
-module = "sandbox_agent"
+agent_id = "artist_agent"
+module = "artist_agent"
 
 container_capabilities = [
   "network",
@@ -10,21 +10,14 @@ container_capabilities = [
 application_capabilities = [
   "image_artifacts",
   "mcp_client",
-  "openai_agents",
 ]
 
 [squid_proxy]
 allowed_domains = []
 allowed_ip_addresses = []
 
-[haproxy]
-ports = [
-  3306,
-]
-
 [mcp_sidecar]
 tools = [
-  "get_html_element_name",
-  "get_active_items",
+  "generate_image",
 ]
 resources = []

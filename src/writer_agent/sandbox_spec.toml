@@ -1,15 +1,12 @@
 schema_version = 1
-agent_id = "agent_1"
-module = "sandbox_agent"
+agent_id = "writer_agent"
+module = "writer_agent"
 
 container_capabilities = [
   "network",
-  "shared_volume",
 ]
 
 application_capabilities = [
-  "image_artifacts",
-  "mcp_client",
   "openai_agents",
 ]
 
@@ -17,14 +14,6 @@ application_capabilities = [
 allowed_domains = []
 allowed_ip_addresses = []
 
-[haproxy]
-ports = [
-  3306,
-]
-
 [mcp_sidecar]
-tools = [
-  "get_html_element_name",
-  "get_active_items",
-]
+tools = []
 resources = []

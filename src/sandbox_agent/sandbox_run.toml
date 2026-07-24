@@ -1,16 +1,20 @@
 schema_version = 1
 
 agents = [
+  "../writer_agent/sandbox_spec.toml",
+  "../artist_agent/sandbox_spec.toml",
+  "../poster_agent/sandbox_spec.toml",
   "sandbox_spec.toml",
-  "../company_header_agent/sandbox_spec.toml",
 ]
 
 [execution]
 mode = "entry_agent"
 entry_agent = "agent_1"
 order = [
+  "writer_agent",
+  "artist_agent",
+  "poster_agent",
   "agent_1",
-  "company_header_agent",
 ]
 
 [network]
@@ -29,3 +33,9 @@ default_ports = []
 [mcp_sidecar]
 default_tools = []
 default_resources = []
+container_capabilities = [
+  "network",
+]
+application_capabilities = [
+  "openai",
+]

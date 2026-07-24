@@ -26,6 +26,7 @@ _IMAGE_REPOSITORY = "sandbox-agent/sandbox-agent"
 _OLLAMA_IMAGE_REPOSITORY = "sandbox-agent/ollama-sidecar"
 _SUPPORTED_SCHEMA_VERSION = 1
 _NETWORK_CAPABILITY = "network"
+_SHARED_VOLUME_CAPABILITY = "shared_volume"
 _MCP_CLIENT_CAPABILITY = "mcp_client"
 _JINA_READER_CAPABILITY = "jina_reader"
 _CODE_EXECUTION_CAPABILITY = "code_execution"
@@ -37,6 +38,7 @@ _ANTHROPIC_CLAUDE_CAPABILITY = "anthropic_claude"
 _ANTHROPIC_PYTHON_CAPABILITY = "anthropic_python"
 _BEEAI_CAPABILITY = "ibm_beeai"
 _GOOGLE_ADK_CAPABILITY = "google_adk"
+_IMAGE_ARTIFACTS_CAPABILITY = "image_artifacts"
 _LANGCHAIN_CAPABILITY = "langchain"
 _LANGGRAPH_CAPABILITY = "langgraph"
 _MICROSOFT_AGENT_CAPABILITY = "microsoft_agent"
@@ -71,6 +73,7 @@ _OLLAMA_SIDECAR_KEYS = {
 }
 _SUPPORTED_CAPABILITIES = {
     _NETWORK_CAPABILITY,
+    _SHARED_VOLUME_CAPABILITY,
     _MCP_CLIENT_CAPABILITY,
     _JINA_READER_CAPABILITY,
     _CODE_EXECUTION_CAPABILITY,
@@ -82,6 +85,7 @@ _SUPPORTED_CAPABILITIES = {
     _ANTHROPIC_PYTHON_CAPABILITY,
     _BEEAI_CAPABILITY,
     _GOOGLE_ADK_CAPABILITY,
+    _IMAGE_ARTIFACTS_CAPABILITY,
     _LANGCHAIN_CAPABILITY,
     _LANGGRAPH_CAPABILITY,
     _MICROSOFT_AGENT_CAPABILITY,
@@ -132,6 +136,7 @@ _NO_PROXY_HOSTS = (
     "169.254.169.254",
     "metadata.google.internal",
 )
+_REMOTE_SHARED_DIRECTORY = "/sandbox-shared"
 _BLOCKED_HOSTNAMES = (
     "host.docker.internal",
     "gateway.docker.internal",
@@ -409,6 +414,21 @@ def resolve_profile(spec: SandboxSpec) -> DockerProfile:
                 container_run_options,
                 tmpfs_option,
             )
+
+    if spec.has_capability(_IMAGE_ARTIFACTS_CAPABILITY):
+        memory = "512m"
+        memory_swap = "512m"
+        ulimits = _replace_ulimit(
+            ulimits,
+            DockerUlimit("fsize", 52428800, 52428800),
+        )
+
+    if spec.has_capability(_SHARED_VOLUME_CAPABILITY):
+        landlock_rules = _append_landlock_rule(
+            landlock_rules,
+            _REMOTE_SHARED_DIRECTORY,
+            "rw",
+        )
 
     if spec.has_capability(_PLAYWRIGHT_CHROMIUM_CAPABILITY):
         browser_surface = BrowserSurfaceProfile()
@@ -1011,6 +1031,18 @@ def _append_landlock_rule(
         return rules
 
     return (*rules, LandlockPathRule(path, access))
+
+
+def _replace_ulimit(
+    ulimits: tuple[DockerUlimit, ...],
+    replacement: DockerUlimit,
+) -> tuple[DockerUlimit, ...]:
+    if not any(ulimit.name == replacement.name for ulimit in ulimits):
+        return (*ulimits, replacement)
+
+    return tuple(
+        replacement if ulimit.name == replacement.name else ulimit for ulimit in ulimits
+    )
 
 
 def _replace_tmpfs_option(

@@ -1,15 +1,22 @@
 # TwoAgentSandbox
 
-TwoAgentSandbox is a Python command-line project for running multiple AI agents
-inside hardened, disposable Docker containers on a shared Docker network.
+TwoAgentSandbox is a Python command-line project for running AI agents inside
+hardened, disposable Docker containers on a shared Docker network.
 
-The current default workload runs two agents:
+The current default workload runs four agents:
 
-- `sandbox_agent`: the entry agent. It creates an HTML document from MariaDB data
-  and owns the final `index.html` artifact.
-- `company_header_agent`: a supporting A2A agent. It exposes an HTTP endpoint,
-  reads the `company_name` MCP resource, and returns updated HTML with a
-  `<header>` element injected into the document.
+- `writer_agent`: a supporting A2A agent. It creates structured movie JSON with
+  a title, tagline, synopsis, genre, and visual style.
+- `artist_agent`: a supporting A2A agent. It asks the MCP sidecar to generate
+  one illustration from the movie details, writes it to the shared artifact
+  volume, and returns compact artifact metadata.
+- `poster_agent`: a supporting A2A agent. It uses the illustration as a
+  reference image, asks the MCP sidecar to generate a final movie poster, writes
+  it to the shared artifact volume, and returns compact artifact metadata.
+- `sandbox_agent`: the entry agent. It asks `writer_agent` for movie details,
+  asks `artist_agent` for the illustration, asks `poster_agent` for the final
+  poster, and owns the final `index.html`, `illustration.png`, and `poster.png`
+  artifacts.
 
 Shared sidecars provide network and tool infrastructure:
 
@@ -34,23 +41,30 @@ On each default run:
    requirement.
 4. It creates a per-run internal Docker network with deterministic IPs.
 5. It starts the shared Squid, HAProxy, and MCP sidecars.
-6. It starts `company_header_agent` as a detached A2A HTTP server.
+6. It starts `writer_agent`, `artist_agent`, and `poster_agent` as supporting
+   A2A HTTP services.
 7. It runs `sandbox_agent` as the foreground entry agent.
-8. `sandbox_agent` calls the MCP tool `get_active_items`.
-9. The MCP sidecar connects to MariaDB through `haproxy-sidecar:3306`.
-10. `sandbox_agent` prepares an HTML document and calls `company_header_agent`
-    through A2A.
-11. `company_header_agent` reads the MCP resource `company_name`, injects a
-    `<header>` element, and returns the updated HTML.
-12. `sandbox_agent` saves the returned HTML as
-    `/sandbox-output/site/index.html` and writes `/sandbox-output/answer.txt`.
-13. When the entry agent exits, the Docker network and containers are torn down.
-
-The generated HTML should contain:
-
-```html
-<header>Example Australian Company</header>
-```
+8. `sandbox_agent` asks `writer_agent` for structured movie JSON.
+9. `sandbox_agent` gives the movie JSON to `artist_agent`.
+10. `artist_agent` calls the MCP tool `generate_image` to create one cinematic
+    illustration, writes it under `/sandbox-shared/artist_agent/`, and returns
+    compact artifact metadata.
+11. `sandbox_agent` gives the movie JSON and illustration metadata to
+    `poster_agent`.
+12. `poster_agent` calls the MCP tool `generate_image` with the illustration as
+    a reference image to create a complete movie poster containing the movie
+    name, tagline, illustration, and poster-style design content. It writes the
+    poster under `/sandbox-shared/poster_agent/` and returns compact artifact
+    metadata.
+13. `sandbox_agent` saves the generated illustration as
+    `/sandbox-output/site/illustration.png`.
+14. `sandbox_agent` saves the generated poster as
+    `/sandbox-output/site/poster.png`.
+15. `sandbox_agent` prepares an HTML document that displays both images and
+    presents the movie title, tagline, synopsis, genre, and visual style.
+16. `sandbox_agent` saves the HTML as `/sandbox-output/site/index.html` and
+    writes `/sandbox-output/answer.txt`.
+17. When the entry agent exits, the Docker network and containers are torn down.
 
 ## Run
 
@@ -77,16 +91,20 @@ The run is declared by `src/sandbox_agent/sandbox_run.toml`:
 schema_version = 1
 
 agents = [
+  "../writer_agent/sandbox_spec.toml",
+  "../artist_agent/sandbox_spec.toml",
+  "../poster_agent/sandbox_spec.toml",
   "sandbox_spec.toml",
-  "../company_header_agent/sandbox_spec.toml",
 ]
 
 [execution]
 mode = "entry_agent"
 entry_agent = "agent_1"
 order = [
+  "writer_agent",
+  "artist_agent",
+  "poster_agent",
   "agent_1",
-  "company_header_agent",
 ]
 
 [network]
@@ -105,10 +123,19 @@ default_ports = []
 [mcp_sidecar]
 default_tools = []
 default_resources = []
+container_capabilities = [
+  "network",
+  "shared_volume",
+]
+application_capabilities = [
+  "openai",
+]
 ```
 
 The run-level file owns shared network and appliance defaults. It also names all
-agent spec files and defines the execution model.
+agent spec files and defines the execution model. The `[mcp_sidecar]`
+`container_capabilities` and `application_capabilities` arrays describe the MCP
+server sidecar's own image and container requirements.
 
 ### Execution Mode
 
@@ -120,12 +147,12 @@ mode = "entry_agent"
 entry_agent = "agent_1"
 ```
 
-In this mode, non-entry agents are started first as long-running A2A HTTP
-servers. The entry agent is then run as the foreground process. When the entry
-agent exits, the whole run is considered complete.
+In this mode, the entry agent is run as the foreground process. If a run declares
+additional non-entry agents, those are started first as long-running supporting
+HTTP agents. When the entry agent exits, the whole run is considered complete.
 
-Sequential multi-agent execution is also supported by the planner/runtime, but
-the default project goal is the entry-agent A2A model.
+Sequential multi-agent execution is also supported by the planner/runtime. The
+default project now uses the entry-agent model with two supporting A2A services.
 
 ## Agent Specs
 
@@ -140,9 +167,11 @@ module = "sandbox_agent"
 
 container_capabilities = [
   "network",
+  "shared_volume",
 ]
 
 application_capabilities = [
+  "image_artifacts",
   "mcp_client",
   "openai_agents",
 ]
@@ -160,12 +189,32 @@ tools = [
 resources = []
 ```
 
-`src/company_header_agent/sandbox_spec.toml` declares the supporting A2A agent:
+`src/writer_agent/sandbox_spec.toml` declares the supporting writer agent:
 
 ```toml
 schema_version = 1
-agent_id = "company_header_agent"
-module = "company_header_agent"
+agent_id = "writer_agent"
+module = "writer_agent"
+
+container_capabilities = [
+  "network",
+]
+
+application_capabilities = [
+  "openai_agents",
+]
+
+[mcp_sidecar]
+tools = []
+resources = []
+```
+
+`src/artist_agent/sandbox_spec.toml` declares the supporting artist agent:
+
+```toml
+schema_version = 1
+agent_id = "artist_agent"
+module = "artist_agent"
 
 container_capabilities = [
   "network",
@@ -173,14 +222,37 @@ container_capabilities = [
 
 application_capabilities = [
   "mcp_client",
-  "openai_agents",
 ]
 
 [mcp_sidecar]
-tools = []
-resources = [
-  "company_name",
+tools = [
+  "generate_image",
 ]
+resources = []
+```
+
+`src/poster_agent/sandbox_spec.toml` declares the supporting poster agent:
+
+```toml
+schema_version = 1
+agent_id = "poster_agent"
+module = "poster_agent"
+
+container_capabilities = [
+  "network",
+  "shared_volume",
+]
+
+application_capabilities = [
+  "image_artifacts",
+  "mcp_client",
+]
+
+[mcp_sidecar]
+tools = [
+  "generate_image",
+]
+resources = []
 ```
 
 Unknown keys, unknown capability values, duplicate IDs, invalid ports, and
@@ -209,10 +281,33 @@ The image hash excludes non-functional identity/runtime details:
 - run ID
 - execution order
 
-The current default run produces distinct images because the two agents declare
-different MCP exposure requirements.
+The current default run produces separate agent images because `sandbox_agent`,
+`writer_agent`, `artist_agent`, and `poster_agent` declare different
+application and sidecar requirements.
 
 ## Shared Sidecars
+
+### Shared Artifacts
+
+Agent containers that declare the `shared_volume` container capability receive a
+read/write mount at:
+
+```text
+/sandbox-shared
+```
+
+The host-side source is a per-run directory:
+
+```text
+.docker_sandbox/runs/run-YYYY-mm-dd-HH-MM-SS/shared/
+```
+
+The default movie-poster workflow uses this for large image handoffs:
+`artist_agent` writes `artist_agent/illustration.png` into the shared volume,
+`poster_agent` reads that illustration as a reference image and writes
+`poster_agent/poster.png`, and `sandbox_agent` copies both artifacts into its
+own web output directory. This keeps large base64 image data out of
+model-visible A2A/tool responses.
 
 ### Squid
 
@@ -254,12 +349,17 @@ MCP_SIDECAR_URL=http://mcp-sidecar:8000/mcp
 ```
 
 For now, a single MCP sidecar exposes the union of all run-level and agent-level
-declared tools/resources.
+declared tools/resources. Its own run-level capabilities are declared in
+`sandbox_run.toml` under `[mcp_sidecar]`. For example, `network` lets the MCP
+sidecar join the sandbox network and use the Squid proxy, and `openai` installs
+the `openai` Python package into the MCP sidecar image and passes
+`OPENAI_API_KEY` from the host into the sidecar container.
 
 Implemented MCP tools include:
 
 - `get_html_element_name`
 - `get_active_items`
+- `generate_image`
 - `microsoft_docs_search`
 - `microsoft_docs_fetch`
 - `microsoft_code_sample_search`
@@ -272,32 +372,6 @@ Implemented MCP resources include:
 - `company_name`: `mcp-sidecar://company/name.txt`
 
 MCP tool/resource calls are audited in `mcp-sidecar-tool-calls.jsonl`.
-
-## A2A Helper Agent
-
-`company_header_agent` implements a small dependency-free subset of A2A using
-Python's standard HTTP server.
-
-It supports:
-
-- `GET /health`
-- `GET /.well-known/agent.json`
-- `POST /a2a` with JSON-RPC method `message/send`
-
-It does not implement the full A2A protocol surface such as streaming, task
-polling, cancellation, push notifications, authentication, or full schema
-validation.
-
-The entry agent calls the helper through a function tool:
-
-```text
-sandbox_agent OpenAI agent
-  -> add_company_header(html_document)
-       -> GET /.well-known/agent.json
-       -> POST /a2a message/send
-       <- updated HTML
-  -> save_html_document("index.html", updated_html)
-```
 
 ## Runtime Environment
 
@@ -358,10 +432,8 @@ A successful default run contains files similar to:
       stderr.txt
       run-metadata.json
       site/index.html
-    company_header_agent/
-      stdout.txt
-      stderr.txt
-      run-metadata.json
+      site/illustration.png
+      site/poster.png
 ```
 
 `resolved-sandbox-plan.json` is the best debugging artifact for image names,
@@ -372,7 +444,9 @@ container names, IP addresses, sidecar exposure, and generated ACL intent.
 Supported container/application capabilities include:
 
 - `network`
+- `shared_volume`
 - `mcp_client`
+- `image_artifacts`
 - `openai`
 - `openai_agents`
 - `anthropic_claude`
@@ -448,19 +522,30 @@ This runs:
 
 ## Architecture
 
-The project has six main packages:
+The project has nine main packages:
+
+- `a2a_support`: shared client and server helpers for the project's small A2A
+  HTTP integrations, including Agent Card construction, JSON-RPC text messages,
+  and response parsing.
 
 - `sandbox_agent`: the entry workload. It owns the OpenAI Agents SDK prompt,
-  MCP calls, A2A client function tool, and final artifact saving.
-- `company_header_agent`: the supporting OpenAI Agents SDK workload and small
-  A2A HTTP server.
+  Writer, Artist, and Poster Agent A2A calls, local artifact saving, and final
+  page creation.
+- `writer_agent`: the supporting OpenAI Agents SDK workload and small A2A HTTP
+  server. It returns structured movie JSON for downstream poster generation.
+- `artist_agent`: the supporting A2A workload that calls MCP `generate_image`,
+  writes shared image artifacts, and returns compact artifact metadata.
+- `poster_agent`: the supporting A2A workload that calls MCP `generate_image`
+  with the illustration as a reference image, writes the final shared poster
+  artifact, and returns compact artifact metadata.
 - `mcp_sidecar`: the MCP server container workload. It owns local MCP resources,
-  local MCP tools, MariaDB access, Microsoft Learn proxy tools, Jina Reader
-  client logic, code-execution client logic, and audit logging.
+  local MCP tools, OpenAI image generation, MariaDB access, Microsoft Learn
+  proxy tools, Jina Reader client logic, code-execution client logic, and audit
+  logging.
 - `code_sidecar`: the optional no-network code-execution sidecar.
 - `docker_sandbox`: the host/container harness. It owns TOML parsing, planning,
-  per-agent image creation, Docker networking, sidecar startup, A2A helper
-  startup, entry-agent execution, artifacts, and teardown.
+  per-agent image creation, Docker networking, sidecar startup, entry-agent
+  execution, artifacts, and teardown.
 - `sandbox_tester`: the copied probe suite used by `--test-sandbox`.
 
 The default Docker topology is:
@@ -478,11 +563,23 @@ Docker host
           |
           +-- sandbox-agent-*-agent_1 container
           |     entry agent
-          |     calls company-header-agent:8080/a2a
+          |     calls writer-agent:8080/a2a
+          |     calls artist-agent:8080/a2a
+          |     calls poster-agent:8080/a2a
           |
-          +-- sandbox-agent-*-company_header_agent container
-          |     network alias: company-header-agent
+          +-- sandbox-agent-*-writer_agent container
+          |     network alias: writer-agent
           |     A2A server on port 8080
+          |
+          +-- sandbox-agent-*-artist_agent container
+          |     network alias: artist-agent
+          |     A2A server on port 8080
+          |     calls mcp-sidecar:8000/mcp
+          |
+          +-- sandbox-agent-*-poster_agent container
+          |     network alias: poster-agent
+          |     A2A server on port 8080
+          |     calls mcp-sidecar:8000/mcp
           |
           +-- mcp-sidecar-* container
           |     network alias: mcp-sidecar
@@ -498,28 +595,44 @@ Docker host
 ## Project Structure
 
 ```text
+src/a2a_support/
+  client.py                    A2A Agent Card and message/send client helpers
+  server.py                    A2A Agent Card and JSON-RPC response helpers
+
 src/sandbox_agent/
   cli.py                       Host delegation and entry workload
   openai_agent.py              Entry OpenAI Agents SDK workload
   openai_tools.py              Entry OpenAI function-tool adapters
   sandbox_run.toml             Run-level multi-agent sandbox declaration
   sandbox_spec.toml            Entry agent declaration
-  tools.py                     MCP calls, A2A client call, artifact saving
+  tools.py                     Writer/Artist/Poster A2A calls, MCP calls, and artifact saving
 
-src/company_header_agent/
+src/writer_agent/
   a2a_server.py                Minimal A2A HTTP server
   cli.py                       Stdin/stdout and A2A server entry point
-  openai_agent.py              Company header OpenAI Agents SDK workload
-  openai_tools.py              Function-tool adapters
-  sandbox_spec.toml            Supporting agent declaration
-  tools.py                     MCP resource read and deterministic HTML injection
+  openai_agent.py              Movie JSON OpenAI Agents SDK workload
+  sandbox_spec.toml            Supporting writer agent declaration
+
+src/artist_agent/
+  a2a_server.py                Minimal A2A HTTP server
+  cli.py                       Stdin/stdout and A2A server entry point
+  openai_agent.py              Movie illustration prompt and MCP image workflow
+  sandbox_spec.toml            Supporting artist agent declaration
+  tools.py                     MCP generate_image client wrapper
+
+src/poster_agent/
+  a2a_server.py                Minimal A2A HTTP server
+  cli.py                       Stdin/stdout and A2A server entry point
+  openai_agent.py              Poster prompt and MCP reference-image workflow
+  sandbox_spec.toml            Supporting poster agent declaration
+  tools.py                     MCP generate_image client wrapper
 
 src/mcp_sidecar/
   audit.py                     JSONL audit logging
   cli.py                       MCP sidecar command-line entry point
   resources.py                 Local MCP resources
   server.py                    FastMCP server and exposure registry
-  tools.py                     Local, MariaDB, Microsoft Learn, Jina, and code tools
+  tools.py                     Local, OpenAI, MariaDB, Microsoft Learn, Jina, and code tools
 
 src/docker_sandbox/
   cli.py                       Docker sandbox command-line orchestration
@@ -544,8 +657,8 @@ src/sandbox_tester/
 TwoAgentSandbox is a learning and hardening exercise, not a security proof. The
 container policy reduces accidental host exposure and makes required capability
 softening visible, but Docker, Landlock, seccomp, Squid, MCP tool boundaries,
-A2A behavior, sidecar behavior, and Python runtime guards should not be
-interpreted as a complete isolation guarantee.
+sidecar behavior, and Python runtime guards should not be interpreted as a
+complete isolation guarantee.
 
 Generated content can vary between runs because it is model-generated.
 

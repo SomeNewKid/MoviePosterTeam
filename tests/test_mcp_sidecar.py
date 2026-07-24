@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import anyio
@@ -17,6 +19,7 @@ from mcp_sidecar.resources import (
 )
 from mcp_sidecar.server import create_mcp_server
 from mcp_sidecar.tools import (
+    generate_image,
     get_active_items,
     get_html_element_name,
     jina_read_url,
@@ -332,6 +335,143 @@ async def test_run_python_script_audits_metadata_only(
 
 
 @pytest.mark.anyio
+async def test_generate_image_calls_openai_image_generation(monkeypatch) -> None:
+    """Verify prompt-only image generation returns base64 data."""
+    calls = []
+
+    class FakeImages:
+        def generate(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(("generate", kwargs))
+            return SimpleNamespace(
+                data=[SimpleNamespace(b64_json="Z2VuZXJhdGVkLWltYWdl")]
+            )
+
+        def edit(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(("edit", kwargs))
+            return SimpleNamespace(data=[SimpleNamespace(b64_json="wrong")])
+
+    class FakeClient:
+        images = FakeImages()
+
+    monkeypatch.setattr(
+        "mcp_sidecar.tools._create_openai_client",
+        lambda: FakeClient(),
+    )
+
+    result = await generate_image("A cinematic desert skyline")
+
+    assert result == {
+        "image_base64": "Z2VuZXJhdGVkLWltYWdl",
+        "mime_type": "image/png",
+        "model": "gpt-image-1",
+        "size": "1024x1024",
+        "referenced_image": False,
+    }
+    assert calls == [
+        (
+            "generate",
+            {
+                "model": "gpt-image-1",
+                "prompt": "A cinematic desert skyline",
+                "quality": "auto",
+                "size": "1024x1024",
+                "output_format": "png",
+            },
+        )
+    ]
+
+
+@pytest.mark.anyio
+async def test_generate_image_passes_reference_image_as_visual_input(
+    monkeypatch,
+) -> None:
+    """Verify an optional reference image is forwarded as image input."""
+    calls = []
+
+    class FakeImages:
+        def edit(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(kwargs)
+            return SimpleNamespace(
+                data=[SimpleNamespace(b64_json="cmVmZXJlbmNlZC1pbWFnZQ==")]
+            )
+
+    class FakeClient:
+        images = FakeImages()
+
+    reference_image = base64.b64encode(b"pencil sketch bytes").decode("ascii")
+    monkeypatch.setattr(
+        "mcp_sidecar.tools._create_openai_client",
+        lambda: FakeClient(),
+    )
+
+    result = await generate_image(
+        "Render this sketch as a photo-realistic scene",
+        reference_image,
+    )
+
+    assert result["image_base64"] == "cmVmZXJlbmNlZC1pbWFnZQ=="
+    assert result["referenced_image"] is True
+    assert calls == [
+        {
+            "model": "gpt-image-1",
+            "prompt": "Render this sketch as a photo-realistic scene",
+            "image": ("reference.png", b"pencil sketch bytes", "image/png"),
+            "input_fidelity": "high",
+            "quality": "auto",
+            "size": "1024x1024",
+            "output_format": "png",
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_generate_image_rejects_invalid_reference_base64() -> None:
+    """Verify reference images must be supplied as valid base64 text."""
+    with pytest.raises(ValueError, match="valid base64"):
+        await generate_image("A test poster", "not base64")
+
+
+@pytest.mark.anyio
+async def test_generate_image_audits_metadata_only(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Verify image generation audit logs omit prompts and image bytes."""
+    audit_log_path = tmp_path / "mcp-sidecar-tool-calls.jsonl"
+    generated_image = "c2VjcmV0LWdlbmVyYXRlZC1pbWFnZQ=="
+
+    def fake_generate(
+        prompt: str,
+        image_reference_base64: str | None,
+    ) -> dict[str, object]:
+        _ = prompt
+        _ = image_reference_base64
+        return {
+            "image_base64": generated_image,
+            "mime_type": "image/png",
+            "model": "gpt-image-1",
+            "size": "1024x1024",
+            "referenced_image": True,
+        }
+
+    monkeypatch.setenv("MCP_SIDECAR_AUDIT_LOG_PATH", str(audit_log_path))
+    monkeypatch.setattr("mcp_sidecar.tools._generate_image_sync", fake_generate)
+
+    await generate_image("secret prompt", "c2VjcmV0LXJlZmVyZW5jZQ==")
+
+    records = _read_jsonl(audit_log_path)
+    assert records[0]["tool"] == "generate_image"
+    assert records[0]["arguments"] == {
+        "prompt_length": 13,
+        "has_image_reference": True,
+        "image_reference_base64_length": 24,
+    }
+    assert records[0]["success"] is True
+    assert "secret prompt" not in json.dumps(records[0])
+    assert generated_image not in json.dumps(records[0])
+
+
+@pytest.mark.anyio
 async def test_jina_read_url_rejects_non_http_urls() -> None:
     """Verify Jina Reader only accepts fully-qualified HTTP or HTTPS URLs."""
     with pytest.raises(ValueError, match="fully-qualified HTTP or HTTPS"):
@@ -560,6 +700,16 @@ def test_mcp_server_exposes_code_execution_tool() -> None:
     tool_names = {tool.name for tool in tools}
 
     assert "run_python_script" in tool_names
+
+
+def test_mcp_server_exposes_image_generation_tool() -> None:
+    """Verify the sidecar exposes the OpenAI image generation tool."""
+    server = create_mcp_server(tool_names=("generate_image",))
+
+    tools = anyio.run(server.list_tools)
+    tool_names = {tool.name for tool in tools}
+
+    assert "generate_image" in tool_names
 
 
 def test_mcp_server_exposes_nothing_by_default(monkeypatch) -> None:

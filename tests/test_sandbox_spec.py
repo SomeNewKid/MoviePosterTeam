@@ -240,7 +240,7 @@ def test_mcp_sidecar_exposure_supports_tools_and_resources(
 
 
 def test_default_sandbox_spec_exposes_active_items_tool() -> None:
-    """Verify the default sandbox spec exposes the MariaDB MCP tool."""
+    """Verify the default sandbox spec exposes entry-agent MCP tools."""
     spec_path = Path("src") / "sandbox_agent" / "sandbox_spec.toml"
 
     spec = load_agent_spec(spec_path)
@@ -248,6 +248,48 @@ def test_default_sandbox_spec_exposes_active_items_tool() -> None:
     assert spec.mcp_sidecar.tools == (
         "get_html_element_name",
         "get_active_items",
+    )
+    assert "image_artifacts" in spec.application_capabilities
+
+
+def test_shared_volume_container_capability_is_supported(tmp_path: Path) -> None:
+    """Verify shared_volume is accepted as an explicit container capability."""
+    spec_path = tmp_path / "agent_1.toml"
+    spec_path.write_text(
+        "\n".join(
+            [
+                "schema_version = 1",
+                'agent_id = "agent_1"',
+                'module = "sandbox_agent"',
+                'container_capabilities = ["shared_volume"]',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    spec = load_agent_spec(spec_path)
+
+    assert spec.container_capabilities == ("shared_volume",)
+
+
+def test_shared_volume_capability_adds_landlock_rule(tmp_path: Path) -> None:
+    """Verify shared_volume permits the shared artifact mount under Landlock."""
+    spec_path = tmp_path / "sandbox_spec.toml"
+    spec_path.write_text(
+        "\n".join(
+            [
+                "schema_version = 1",
+                'capabilities = ["shared_volume"]',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    profile = resolve_profile(load_sandbox_spec(spec_path))
+
+    assert any(
+        rule.path == "/sandbox-shared" and rule.access == "rw"
+        for rule in profile.landlock_rules
     )
 
 
@@ -1090,6 +1132,7 @@ def test_run_configuration_aggregates_multiple_agent_specs(tmp_path: Path) -> No
                 "",
                 "[mcp_sidecar]",
                 'default_tools = ["default_tool"]',
+                'container_capabilities = ["network"]',
             ]
         ),
         encoding="utf-8",
@@ -1153,7 +1196,7 @@ def test_agent_image_configuration_reuses_same_functional_image(
             [
                 "schema_version = 1",
                 'agent_id = "agent_2"',
-                'module = "company_header_agent"',
+                'module = "review_agent"',
                 'container_capabilities = ["network"]',
                 'application_capabilities = ["mcp_client", "openai_agents"]',
             ]
@@ -1211,7 +1254,7 @@ def test_agent_image_configuration_splits_different_functional_images(
             [
                 "schema_version = 1",
                 'agent_id = "agent_2"',
-                'module = "company_header_agent"',
+                'module = "review_agent"',
                 'container_capabilities = ["network"]',
                 'application_capabilities = ["mcp_client"]',
             ]
@@ -1489,6 +1532,34 @@ def test_openai_agents_capability_resolves_required_runtime_support(
     dockerfile = generate_dockerfile(spec)
     assert "openai-agents==0.18.2" in dockerfile
     assert "openai==2.45.0" not in dockerfile
+
+
+def test_image_artifacts_capability_resolves_image_file_limits(
+    tmp_path: Path,
+) -> None:
+    """Verify image artifact support allows generated image files."""
+    spec_path = tmp_path / "sandbox_spec.toml"
+    spec_path.write_text(
+        "\n".join(
+            [
+                "schema_version = 1",
+                'capabilities = ["image_artifacts"]',
+                "[squid_proxy]",
+                "allowed_domains = []",
+                "allowed_ip_addresses = []",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    spec = load_sandbox_spec(spec_path)
+    profile = resolve_profile(spec)
+
+    assert profile.memory == "512m"
+    assert profile.memory_swap == "512m"
+    assert any(
+        ulimit.name == "fsize" and ulimit.soft == 52428800 for ulimit in profile.ulimits
+    )
 
 
 def test_mcp_client_capability_resolves_required_runtime_support(

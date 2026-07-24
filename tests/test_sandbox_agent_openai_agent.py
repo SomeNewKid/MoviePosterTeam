@@ -24,13 +24,15 @@ def test_create_openai_agent_uses_gpt_model_and_tools(monkeypatch) -> None:
     assert calls[0]["name"] == "Active Items Document Generator"
     assert calls[0]["model"] == "gpt-4.1-mini"
     assert calls[0]["tools"] == [
-        "tool:get_active_items",
-        "tool:add_company_header",
+        "tool:get_movie_details",
+        "tool:get_movie_illustration",
+        "tool:get_movie_poster",
+        "tool:save_shared_image_artifact",
         "tool:save_html_document",
         "tool:save_answer",
     ]
     assert (
-        "Do not finish until all four tool calls have succeeded."
+        "Do not finish until all seven tool calls have succeeded."
         in (calls[0]["instructions"])
     )
 
@@ -92,21 +94,34 @@ def test_run_html_element_agent_lets_model_sequence_tool_calls(
     assert calls[0]["type"] == "agent"
     assert calls[0]["model"] == "gpt-4.1-mini"
     assert calls[0]["tools"] == [
-        "tool:get_active_items",
-        "tool:add_company_header",
+        "tool:get_movie_details",
+        "tool:get_movie_illustration",
+        "tool:get_movie_poster",
+        "tool:save_shared_image_artifact",
         "tool:save_html_document",
         "tool:save_answer",
     ]
     assert calls[1]["type"] == "run"
-    assert "Use the get_active_items tool first." in calls[1]["prompt"]
-    assert "Treat its response as a JSON array" in calls[1]["prompt"]
-    assert "call the add_company_header tool" in calls[1]["prompt"]
+    assert "Use the get_movie_details tool first." in calls[1]["prompt"]
+    assert "title, tagline, synopsis, genre, and visual_style" in calls[1]["prompt"]
+    assert "get_movie_illustration tool" in calls[1]["prompt"]
+    assert "get_movie_poster tool" in calls[1]["prompt"]
+    assert "exactly once" in calls[1]["prompt"]
     assert (
-        "Save\nthat finished HTML document with the save_html_document tool."
+        "Do not call generate_image,\ngenerate_image_artifact, or save_image directly."
+        in (calls[1]["prompt"])
+    )
+    assert "artifact_path" in calls[1]["prompt"]
+    assert "save_shared_image_artifact tool" in calls[1]["prompt"]
+    assert "illustration.png" in calls[1]["prompt"]
+    assert "poster.png" in calls[1]["prompt"]
+    assert "Treat the response as a JSON object" in calls[1]["prompt"]
+    assert (
+        "Save the finished HTML document with the save_html_document tool."
         in (calls[1]["prompt"])
     )
     assert "save_answer tool" in calls[1]["prompt"]
-    assert calls[1]["max_turns"] == 10
+    assert calls[1]["max_turns"] == 14
 
 
 def test_run_html_element_agent_accepts_explicit_model(tmp_path, monkeypatch) -> None:
@@ -161,11 +176,17 @@ def _install_fake_agent_dependencies(
         Runner=runner,
     )
     fake_openai_tools_module = SimpleNamespace(
-        add_company_header_tool="tool:add_company_header",
+        generate_image_artifact_tool="tool:generate_image_artifact",
+        generate_image_tool="tool:generate_image",
         get_active_items_tool="tool:get_active_items",
         get_html_element_name_tool="tool:get_html_element_name",
+        get_movie_illustration_tool="tool:get_movie_illustration",
+        get_movie_details_tool="tool:get_movie_details",
+        get_movie_poster_tool="tool:get_movie_poster",
         save_answer_tool="tool:save_answer",
         save_html_document_tool="tool:save_html_document",
+        save_image_tool="tool:save_image",
+        save_shared_image_artifact_tool="tool:save_shared_image_artifact",
     )
     monkeypatch.setitem(sys.modules, "agents", fake_agents_module)
     monkeypatch.setitem(

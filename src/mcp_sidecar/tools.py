@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import importlib
 import json
 import os
@@ -21,6 +23,7 @@ _MICROSOFT_DOCS_FETCH_TOOL_NAME = "microsoft_docs_fetch"
 _MICROSOFT_CODE_SAMPLE_SEARCH_TOOL_NAME = "microsoft_code_sample_search"
 _JINA_READ_URL_TOOL_NAME = "jina_read_url"
 _RUN_PYTHON_SCRIPT_TOOL_NAME = "run_python_script"
+_GENERATE_IMAGE_TOOL_NAME = "generate_image"
 _JINA_READER_URL_ENVIRONMENT_VARIABLE = "JINA_READER_URL"
 _CODE_SIDECAR_URL_ENVIRONMENT_VARIABLE = "CODE_SIDECAR_URL"
 _DEFAULT_JINA_READER_URL = "http://jina-reader:8081"
@@ -40,6 +43,12 @@ FROM items
 WHERE status = 'active'
 ORDER BY id
 """
+_DEFAULT_IMAGE_MODEL = "gpt-image-1"
+_DEFAULT_IMAGE_SIZE = "1024x1024"
+_DEFAULT_IMAGE_QUALITY = "auto"
+_DEFAULT_IMAGE_FORMAT = "png"
+_GENERATED_IMAGE_MIME_TYPE = "image/png"
+_REFERENCE_IMAGE_FILE_NAME = "reference.png"
 
 
 class _MariaDBConnectionSettings(TypedDict):
@@ -165,6 +174,40 @@ async def run_python_script(
     write_mcp_audit_record(
         "tool",
         _RUN_PYTHON_SCRIPT_TOOL_NAME,
+        arguments,
+        result=result_text,
+    )
+    return result
+
+
+async def generate_image(
+    prompt: str,
+    image_reference_base64: str | None = None,
+) -> dict[str, object]:
+    """Generate an image from a prompt and optional visual reference image."""
+    arguments = _build_generate_image_audit_arguments(
+        prompt,
+        image_reference_base64,
+    )
+    try:
+        result = await asyncio.to_thread(
+            _generate_image_sync,
+            prompt,
+            image_reference_base64,
+        )
+    except Exception as error:
+        write_mcp_audit_record(
+            "tool",
+            _GENERATE_IMAGE_TOOL_NAME,
+            arguments,
+            error=error,
+        )
+        raise
+
+    result_text = _build_generate_image_audit_result(result)
+    write_mcp_audit_record(
+        "tool",
+        _GENERATE_IMAGE_TOOL_NAME,
         arguments,
         result=result_text,
     )
@@ -334,6 +377,124 @@ def _run_python_script_sync(
         raise RuntimeError("Code sidecar did not return a JSON object.")
 
     return data
+
+
+def _generate_image_sync(
+    prompt: str,
+    image_reference_base64: str | None,
+) -> dict[str, object]:
+    normalized_prompt = _read_image_prompt(prompt)
+    has_reference = image_reference_base64 is not None
+    reference_file = None
+    if has_reference:
+        reference_file = _build_reference_image_file(image_reference_base64)
+
+    client = _create_openai_client()
+
+    if has_reference:
+        response = client.images.edit(
+            model=_DEFAULT_IMAGE_MODEL,
+            prompt=normalized_prompt,
+            image=reference_file,
+            input_fidelity="high",
+            quality=_DEFAULT_IMAGE_QUALITY,
+            size=_DEFAULT_IMAGE_SIZE,
+            output_format=_DEFAULT_IMAGE_FORMAT,
+        )
+    else:
+        response = client.images.generate(
+            model=_DEFAULT_IMAGE_MODEL,
+            prompt=normalized_prompt,
+            quality=_DEFAULT_IMAGE_QUALITY,
+            size=_DEFAULT_IMAGE_SIZE,
+            output_format=_DEFAULT_IMAGE_FORMAT,
+        )
+
+    image_base64 = _read_openai_image_base64(response)
+    return {
+        "image_base64": image_base64,
+        "mime_type": _GENERATED_IMAGE_MIME_TYPE,
+        "model": _DEFAULT_IMAGE_MODEL,
+        "size": _DEFAULT_IMAGE_SIZE,
+        "referenced_image": has_reference,
+    }
+
+
+def _read_image_prompt(prompt: str) -> str:
+    if not isinstance(prompt, str):
+        raise ValueError("prompt must be a string.")
+
+    normalized_prompt = prompt.strip()
+    if not normalized_prompt:
+        raise ValueError("prompt must not be empty.")
+
+    return normalized_prompt
+
+
+def _create_openai_client() -> Any:
+    openai_module: Any = importlib.import_module("openai")
+    return openai_module.OpenAI()
+
+
+def _build_reference_image_file(image_reference_base64: str) -> tuple[str, bytes, str]:
+    image_bytes = _decode_base64_image(image_reference_base64)
+    return (_REFERENCE_IMAGE_FILE_NAME, image_bytes, _GENERATED_IMAGE_MIME_TYPE)
+
+
+def _decode_base64_image(image_reference_base64: str) -> bytes:
+    if not isinstance(image_reference_base64, str):
+        raise ValueError("image_reference_base64 must be a string.")
+
+    encoded_image = image_reference_base64.strip()
+    if encoded_image.lower().startswith("data:") and "," in encoded_image:
+        _prefix, encoded_image = encoded_image.split(",", 1)
+    if not encoded_image:
+        raise ValueError("image_reference_base64 must not be empty.")
+
+    try:
+        return base64.b64decode(encoded_image, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("image_reference_base64 must be valid base64.") from error
+
+
+def _read_openai_image_base64(response: Any) -> str:
+    data = getattr(response, "data", None)
+    if not data:
+        raise RuntimeError("OpenAI image response did not contain image data.")
+
+    first_image = data[0]
+    image_base64 = getattr(first_image, "b64_json", None)
+    if not isinstance(image_base64, str) or not image_base64:
+        raise RuntimeError("OpenAI image response did not contain base64 image data.")
+
+    return image_base64
+
+
+def _build_generate_image_audit_arguments(
+    prompt: str,
+    image_reference_base64: str | None,
+) -> dict[str, object]:
+    arguments: dict[str, object] = {
+        "prompt_length": len(prompt) if isinstance(prompt, str) else 0,
+        "has_image_reference": image_reference_base64 is not None,
+    }
+    if image_reference_base64 is not None:
+        arguments["image_reference_base64_length"] = len(image_reference_base64)
+
+    return arguments
+
+
+def _build_generate_image_audit_result(result: dict[str, object]) -> str:
+    image_base64 = result.get("image_base64")
+    image_base64_length = len(image_base64) if isinstance(image_base64, str) else 0
+    summary = {
+        "image_base64_length": image_base64_length,
+        "mime_type": result.get("mime_type"),
+        "model": result.get("model"),
+        "referenced_image": result.get("referenced_image"),
+        "size": result.get("size"),
+    }
+    return json.dumps(summary, sort_keys=True)
 
 
 async def _call_audited_microsoft_learn_tool(

@@ -1,14 +1,15 @@
 schema_version = 1
-agent_id = "company_header_agent"
-module = "company_header_agent"
+agent_id = "poster_agent"
+module = "poster_agent"
 
 container_capabilities = [
   "network",
+  "shared_volume",
 ]
 
 application_capabilities = [
+  "image_artifacts",
   "mcp_client",
-  "openai_agents",
 ]
 
 [squid_proxy]
@@ -16,7 +17,7 @@ allowed_domains = []
 allowed_ip_addresses = []
 
 [mcp_sidecar]
-tools = []
-resources = [
-  "company_name",
+tools = [
+  "generate_image",
 ]
+resources = []

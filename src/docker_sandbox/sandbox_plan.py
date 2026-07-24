@@ -48,6 +48,7 @@ _AGENT_MCP_SIDECAR_KEYS = {
 _SUPPORTED_CONTAINER_CAPABILITIES = {
     "network",
     "playwright_chromium",
+    "shared_volume",
     "shell_access",
 }
 _SUPPORTED_APPLICATION_CAPABILITIES = {
@@ -56,6 +57,7 @@ _SUPPORTED_APPLICATION_CAPABILITIES = {
     "crewai",
     "google_adk",
     "ibm_beeai",
+    "image_artifacts",
     "langchain",
     "langgraph",
     "mcp_client",
@@ -90,6 +92,8 @@ _HAPROXY_KEYS = {
 _MCP_SIDECAR_KEYS = {
     "default_tools",
     "default_resources",
+    "container_capabilities",
+    "application_capabilities",
 }
 _IMAGE_REPOSITORY = "sandbox-agent"
 _AGENT_CONTAINER_NAME_PREFIX = "sandbox-agent"
@@ -103,6 +107,7 @@ _HAPROXY_ALIAS = "haproxy-sidecar"
 _MCP_SIDECAR_ALIAS = "mcp-sidecar"
 _MCP_SIDECAR_PORT = 8000
 _MCP_SIDECAR_PATH = "/mcp"
+_GENERATE_IMAGE_TOOL_NAME = "generate_image"
 _PLAN_ARTIFACT_FILE_NAME = "resolved-sandbox-plan.json"
 _DEFAULT_SUBNET = "172.28.0.0/24"
 _SERVICE_IP_OFFSETS = {
@@ -168,6 +173,15 @@ class McpSidecarSpec:
 
     default_tools: tuple[str, ...] = ()
     default_resources: tuple[str, ...] = ()
+    container_capabilities: tuple[str, ...] = ()
+    application_capabilities: tuple[str, ...] = ()
+
+    @property
+    def capabilities(self) -> tuple[str, ...]:
+        """Return all declared sidecar capabilities in stable declaration order."""
+        return _deduplicate(
+            (*self.container_capabilities, *self.application_capabilities)
+        )
 
 
 @dataclass(frozen=True)
@@ -309,6 +323,11 @@ class ResolvedMcpSidecarPlan:
     default_resources: tuple[str, ...] = ()
     tools: tuple[str, ...] = ()
     resources: tuple[str, ...] = ()
+    container_capabilities: tuple[str, ...] = ()
+    application_capabilities: tuple[str, ...] = ()
+    capabilities: tuple[str, ...] = ()
+    allowed_domains: tuple[str, ...] = ()
+    allowed_ip_addresses: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -361,6 +380,7 @@ def build_sandbox_plan(
     execution = _resolve_execution_spec(run_spec.execution, agent_specs)
     ordered_agent_specs = _order_agent_specs(agent_specs, execution.order)
     _validate_run_network_requirements(run_spec, ordered_agent_specs)
+    _validate_mcp_sidecar_network_requirement(run_spec, ordered_agent_specs)
 
     normalized_run_id = _normalize_docker_identifier(run_id)
     network_name = None
@@ -488,7 +508,9 @@ def build_squid_acl_configuration(plan: ResolvedSandboxPlan) -> str:
         "http_access deny ipv6_literal_connect",
     ]
     agent_source_acl_name = _build_agent_source_acls(lines, plan.agents)
+    mcp_sidecar_source_acl_name = _build_mcp_sidecar_source_acl(lines, plan)
     _append_squid_default_acl_rules(lines, plan, agent_source_acl_name)
+    _append_squid_mcp_sidecar_acl_rules(lines, plan, mcp_sidecar_source_acl_name)
     _append_squid_agent_acl_rules(lines, plan)
     lines.extend(
         [
@@ -574,6 +596,17 @@ def _build_agent_source_acls(
     return "planned_agents"
 
 
+def _build_mcp_sidecar_source_acl(
+    lines: list[str],
+    plan: ResolvedSandboxPlan,
+) -> str | None:
+    if not plan.mcp_sidecar.enabled or plan.mcp_sidecar.ip_address is None:
+        return None
+
+    lines.append(f"acl mcp_sidecar src {plan.mcp_sidecar.ip_address}")
+    return "mcp_sidecar"
+
+
 def _append_squid_default_acl_rules(
     lines: list[str],
     plan: ResolvedSandboxPlan,
@@ -592,6 +625,34 @@ def _append_squid_default_acl_rules(
         lines.append(
             f"http_access allow {agent_source_acl_name} default_allowed_ip_addresses"
         )
+
+
+def _append_squid_mcp_sidecar_acl_rules(
+    lines: list[str],
+    plan: ResolvedSandboxPlan,
+    source_acl_name: str | None,
+) -> None:
+    if source_acl_name is None:
+        return
+
+    domains = _deduplicate(
+        (*plan.squid_proxy.default_allowed_domains, *plan.mcp_sidecar.allowed_domains)
+    )
+    if domains:
+        acl_name = f"{source_acl_name}_allowed_sites"
+        lines.append(f"acl {acl_name} dstdomain {' '.join(domains)}")
+        lines.append(f"http_access allow {source_acl_name} {acl_name}")
+
+    ip_addresses = _deduplicate(
+        (
+            *plan.squid_proxy.default_allowed_ip_addresses,
+            *plan.mcp_sidecar.allowed_ip_addresses,
+        )
+    )
+    if ip_addresses:
+        acl_name = f"{source_acl_name}_allowed_ip_addresses"
+        lines.append(f"acl {acl_name} dst {' '.join(ip_addresses)}")
+        lines.append(f"http_access allow {source_acl_name} {acl_name}")
 
 
 def _append_squid_agent_acl_rules(
@@ -770,6 +831,8 @@ def _validate_run_network_requirements(
     if network_agent_ids:
         names = ", ".join(network_agent_ids)
         raise ValueError(f"Network is disabled but required by agent: {names}")
+    if "network" in run_spec.mcp_sidecar.container_capabilities:
+        raise ValueError("Network is disabled but required by MCP sidecar.")
 
     if run_spec.squid_proxy.default_allowed_domains:
         raise ValueError("Squid proxy defaults require the network to be enabled.")
@@ -792,9 +855,11 @@ def _build_squid_plan(
     run_id: str,
     ip_address: str | None,
 ) -> ResolvedSquidPlan:
-    enabled = run_spec.network.enabled and any(
-        "network" in agent.container_capabilities for agent in agent_specs
+    needs_network = (
+        any("network" in agent.container_capabilities for agent in agent_specs)
+        or "network" in run_spec.mcp_sidecar.container_capabilities
     )
+    enabled = run_spec.network.enabled and needs_network
     return ResolvedSquidPlan(
         enabled=enabled,
         container_name=_container_name(_SQUID_CONTAINER_NAME_PREFIX, run_id)
@@ -902,6 +967,16 @@ def _build_agent_no_proxy(
 
 def _build_agent_allowed_domains(spec: AgentSpec) -> tuple[str, ...]:
     domains = list(spec.squid_proxy.allowed_domains)
+    if _OPENAI_FAMILY_CAPABILITIES.intersection(spec.application_capabilities):
+        domains.append(_OPENAI_PROVIDER_DOMAIN)
+    if _ANTHROPIC_FAMILY_CAPABILITIES.intersection(spec.application_capabilities):
+        domains.append(_ANTHROPIC_PROVIDER_DOMAIN)
+
+    return tuple(dict.fromkeys(domains))
+
+
+def _build_mcp_sidecar_allowed_domains(spec: McpSidecarSpec) -> tuple[str, ...]:
+    domains = []
     if _OPENAI_FAMILY_CAPABILITIES.intersection(spec.application_capabilities):
         domains.append(_OPENAI_PROVIDER_DOMAIN)
     if _ANTHROPIC_FAMILY_CAPABILITIES.intersection(spec.application_capabilities):
@@ -1035,6 +1110,11 @@ def build_mcp_sidecar_plan(
         default_resources=spec.default_resources,
         tools=tools,
         resources=resources,
+        container_capabilities=spec.container_capabilities,
+        application_capabilities=spec.application_capabilities,
+        capabilities=spec.capabilities,
+        allowed_domains=_build_mcp_sidecar_allowed_domains(spec),
+        allowed_ip_addresses=(),
     )
 
 
@@ -1269,9 +1349,31 @@ def _read_haproxy_spec(data: dict[str, object]) -> HAProxySpec:
 
 def _read_mcp_sidecar_spec(data: dict[str, object]) -> McpSidecarSpec:
     value = _read_table(data, "mcp_sidecar", _MCP_SIDECAR_KEYS)
+    default_tools = _read_string_tuple(value, "default_tools")
+    default_resources = _read_string_tuple(value, "default_resources")
+    container_capabilities = _read_string_tuple(value, "container_capabilities")
+    application_capabilities = _read_string_tuple(value, "application_capabilities")
+    _validate_capabilities(
+        container_capabilities,
+        _SUPPORTED_CONTAINER_CAPABILITIES,
+        "MCP sidecar container",
+    )
+    _validate_capabilities(
+        application_capabilities,
+        _SUPPORTED_APPLICATION_CAPABILITIES,
+        "MCP sidecar application",
+    )
+    _validate_mcp_sidecar_capabilities(
+        container_capabilities,
+        application_capabilities,
+        default_tools,
+        default_resources,
+    )
     return McpSidecarSpec(
-        default_tools=_read_string_tuple(value, "default_tools"),
-        default_resources=_read_string_tuple(value, "default_resources"),
+        default_tools=default_tools,
+        default_resources=default_resources,
+        container_capabilities=container_capabilities,
+        application_capabilities=application_capabilities,
     )
 
 
@@ -1423,6 +1525,59 @@ def _validate_agent_appliance_requirements(
         application_capabilities
     ):
         raise ValueError("Agent MCP exposure requires the mcp_client capability.")
+
+
+def _validate_mcp_sidecar_capabilities(
+    container_capabilities: tuple[str, ...],
+    application_capabilities: tuple[str, ...],
+    default_tools: tuple[str, ...],
+    default_resources: tuple[str, ...],
+) -> None:
+    _validate_agent_network_requirements(
+        container_capabilities,
+        application_capabilities,
+    )
+    if (default_tools or default_resources) and "network" not in (
+        container_capabilities
+    ):
+        raise ValueError("MCP sidecar exposure requires the network capability.")
+
+
+def _validate_mcp_sidecar_network_requirement(
+    run_spec: SandboxRunSpec,
+    agent_specs: tuple[AgentSpec, ...],
+) -> None:
+    _validate_mcp_sidecar_tool_requirements(run_spec, agent_specs)
+    has_exposure = bool(
+        run_spec.mcp_sidecar.default_tools
+        or run_spec.mcp_sidecar.default_resources
+        or any(
+            agent.mcp_sidecar.tools or agent.mcp_sidecar.resources
+            for agent in agent_specs
+        )
+    )
+    if not has_exposure:
+        return
+    if "network" in run_spec.mcp_sidecar.container_capabilities:
+        return
+
+    raise ValueError("MCP sidecar exposure requires the network capability.")
+
+
+def _validate_mcp_sidecar_tool_requirements(
+    run_spec: SandboxRunSpec,
+    agent_specs: tuple[AgentSpec, ...],
+) -> None:
+    exposed_tools = (
+        *run_spec.mcp_sidecar.default_tools,
+        *(tool for agent in agent_specs for tool in agent.mcp_sidecar.tools),
+    )
+    if _GENERATE_IMAGE_TOOL_NAME not in exposed_tools:
+        return
+    if "openai" in run_spec.mcp_sidecar.application_capabilities:
+        return
+
+    raise ValueError("The generate_image MCP tool requires the openai capability.")
 
 
 def _find_duplicates(items: tuple[_T, ...]) -> tuple[_T, ...]:

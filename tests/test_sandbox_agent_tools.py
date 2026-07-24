@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 
 from sandbox_agent.tools import (
-    add_company_header,
+    generate_image,
+    generate_image_artifact,
     get_active_items,
     get_answer_format,
     get_html_element_name,
+    get_movie_details,
+    get_movie_illustration,
+    get_movie_poster,
     jina_read_url,
     microsoft_code_sample_search,
     microsoft_docs_fetch,
     microsoft_docs_search,
     run_python_script,
     save_answer,
+    save_image,
+    save_shared_image_artifact,
     validate_html5_element,
 )
 
@@ -186,6 +194,189 @@ def test_run_python_script_calls_mcp_sidecar(monkeypatch) -> None:
     ]
 
 
+def test_generate_image_calls_mcp_sidecar(monkeypatch) -> None:
+    """Verify image generation calls the sidecar wrapper tool."""
+    calls = []
+
+    def fake_call(tool_name: str, arguments: dict[str, object]) -> str:
+        calls.append((tool_name, arguments))
+        return '{"image_base64": "abc", "mime_type": "image/png"}'
+
+    monkeypatch.setenv("MCP_SIDECAR_URL", "http://mcp-sidecar:8000/mcp")
+    monkeypatch.setattr("sandbox_agent.tools._call_mcp_sidecar_tool", fake_call)
+
+    result = generate_image("A pencil sketch as a film still", "c2tldGNo")
+
+    assert result == '{"image_base64": "abc", "mime_type": "image/png"}'
+    assert calls == [
+        (
+            "generate_image",
+            {
+                "prompt": "A pencil sketch as a film still",
+                "image_reference_base64": "c2tldGNo",
+            },
+        )
+    ]
+
+
+def test_generate_image_artifact_saves_image_without_returning_base64(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Verify image generation artifacts hide base64 from the model result."""
+    site_path = tmp_path / "site"
+    image_base64 = base64.b64encode(b"fake generated png bytes").decode("ascii")
+    calls = []
+
+    def fake_generate_image(
+        prompt: str,
+        image_reference_base64: str | None = None,
+    ) -> str:
+        calls.append((prompt, image_reference_base64))
+        return (
+            '{"image_base64": "'
+            + image_base64
+            + '", "mime_type": "image/png", "model": "gpt-image-1", '
+            '"size": "1024x1024"}'
+        )
+
+    monkeypatch.setattr("sandbox_agent.tools._SITE_DIRECTORY", site_path)
+    monkeypatch.setattr("sandbox_agent.tools.generate_image", fake_generate_image)
+
+    result = generate_image_artifact(
+        "A cinematic test image",
+        "illustration.png",
+        "cmVmZXJlbmNl",
+    )
+
+    assert calls == [("A cinematic test image", "cmVmZXJlbmNl")]
+    assert result == {
+        "success": True,
+        "file_name": "illustration.png",
+        "message": "Created illustration.png",
+        "mime_type": "image/png",
+        "model": "gpt-image-1",
+        "size": "1024x1024",
+        "byte_count": 24,
+    }
+    assert image_base64 not in str(result)
+    assert (site_path / "illustration.png").read_bytes() == b"fake generated png bytes"
+
+
+def test_generate_image_artifact_rejects_invalid_mcp_result(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Verify invalid MCP image responses do not create artifacts."""
+    site_path = tmp_path / "site"
+
+    monkeypatch.setattr("sandbox_agent.tools._SITE_DIRECTORY", site_path)
+    monkeypatch.setattr(
+        "sandbox_agent.tools.generate_image",
+        lambda prompt, image_reference_base64=None: "{}",
+    )
+
+    result = generate_image_artifact("A cinematic test image", "illustration.png")
+
+    assert result == {
+        "success": False,
+        "message": "Failed to create `illustration.png",
+    }
+    assert not (site_path / "illustration.png").exists()
+
+
+def test_get_movie_details_calls_writer_agent(monkeypatch) -> None:
+    """Verify movie details are requested from the writer A2A agent."""
+    calls = []
+
+    def fake_read_card(base_url: str) -> dict[str, object]:
+        calls.append(("card", base_url))
+        return {"url": "http://writer-agent:8080/a2a"}
+
+    def fake_send_message(endpoint_url: str, text: str, request_id: str) -> str:
+        calls.append(("message", endpoint_url, text, request_id))
+        return '{"title": "Moon Harbor"}'
+
+    monkeypatch.setenv("WRITER_AGENT_URL", "http://writer-agent:8080")
+    monkeypatch.setattr("sandbox_agent.tools.read_agent_card", fake_read_card)
+    monkeypatch.setattr("sandbox_agent.tools.send_text_message", fake_send_message)
+
+    result = get_movie_details("Write a moonlit adventure.")
+
+    assert result == '{"title": "Moon Harbor"}'
+    assert calls == [
+        ("card", "http://writer-agent:8080"),
+        (
+            "message",
+            "http://writer-agent:8080/a2a",
+            "Write a moonlit adventure.",
+            "writer-agent-request",
+        ),
+    ]
+
+
+def test_get_movie_illustration_calls_artist_agent(monkeypatch) -> None:
+    """Verify illustration requests are sent to the artist A2A agent."""
+    calls = []
+
+    def fake_read_card(base_url: str) -> dict[str, object]:
+        calls.append(("card", base_url))
+        return {"url": "http://artist-agent:8080/a2a"}
+
+    def fake_send_message(endpoint_url: str, text: str, request_id: str) -> str:
+        calls.append(("message", endpoint_url, text, request_id))
+        return '{"artifact_path": "artist_agent/illustration.png"}'
+
+    monkeypatch.setenv("ARTIST_AGENT_URL", "http://artist-agent:8080")
+    monkeypatch.setattr("sandbox_agent.tools.read_agent_card", fake_read_card)
+    monkeypatch.setattr("sandbox_agent.tools.send_text_message", fake_send_message)
+
+    movie_details = '{"title": "Moon Harbor"}'
+    result = get_movie_illustration(movie_details)
+
+    assert result == '{"artifact_path": "artist_agent/illustration.png"}'
+    assert calls == [
+        ("card", "http://artist-agent:8080"),
+        (
+            "message",
+            "http://artist-agent:8080/a2a",
+            movie_details,
+            "artist-agent-request",
+        ),
+    ]
+
+
+def test_get_movie_poster_calls_poster_agent(monkeypatch) -> None:
+    """Verify poster requests are sent to the poster A2A agent."""
+    calls = []
+
+    def fake_read_card(base_url: str) -> dict[str, object]:
+        calls.append(("card", base_url))
+        return {"url": "http://poster-agent:8080/a2a"}
+
+    def fake_send_message(endpoint_url: str, text: str, request_id: str) -> str:
+        calls.append(("message", endpoint_url, text, request_id))
+        return '{"artifact_path": "poster_agent/poster.png"}'
+
+    monkeypatch.setenv("POSTER_AGENT_URL", "http://poster-agent:8080")
+    monkeypatch.setattr("sandbox_agent.tools.read_agent_card", fake_read_card)
+    monkeypatch.setattr("sandbox_agent.tools.send_text_message", fake_send_message)
+
+    poster_request = '{"movie": {"title": "Moon Harbor"}}'
+    result = get_movie_poster(poster_request)
+
+    assert result == '{"artifact_path": "poster_agent/poster.png"}'
+    assert calls == [
+        ("card", "http://poster-agent:8080"),
+        (
+            "message",
+            "http://poster-agent:8080/a2a",
+            poster_request,
+            "poster-agent-request",
+        ),
+    ]
+
+
 def test_get_answer_format_reads_mcp_sidecar_resource(monkeypatch) -> None:
     """Verify answer format reads the configured MCP sidecar resource."""
     calls = []
@@ -206,34 +397,6 @@ def test_get_answer_format_reads_mcp_sidecar_resource(monkeypatch) -> None:
     ]
 
 
-def test_add_company_header_calls_a2a_agent(monkeypatch) -> None:
-    """Verify finished HTML is requested from the company header A2A agent."""
-    calls = []
-
-    def fake_read_card(card_url: str) -> dict[str, object]:
-        calls.append(("card", card_url))
-        return {"url": "http://company-header-agent:8080/a2a"}
-
-    def fake_send_message(endpoint_url: str, html_document: str) -> str:
-        calls.append(("message", endpoint_url, html_document))
-        return "<html><body><header>Company</header><main></main></body></html>"
-
-    monkeypatch.setattr("sandbox_agent.tools._read_a2a_agent_card", fake_read_card)
-    monkeypatch.setattr("sandbox_agent.tools._send_a2a_html_message", fake_send_message)
-
-    result = add_company_header("<html><body><main></main></body></html>")
-
-    assert result == "<html><body><header>Company</header><main></main></body></html>"
-    assert calls == [
-        ("card", "http://company-header-agent:8080/.well-known/agent.json"),
-        (
-            "message",
-            "http://company-header-agent:8080/a2a",
-            "<html><body><main></main></body></html>",
-        ),
-    ]
-
-
 def test_save_answer_writes_answer_file(tmp_path, monkeypatch) -> None:
     """Verify answer text is saved to the sandbox output directory."""
     answer_path = tmp_path / "answer.txt"
@@ -246,3 +409,90 @@ def test_save_answer_writes_answer_file(tmp_path, monkeypatch) -> None:
         "message": "Created answer.txt",
     }
     assert answer_path.read_text(encoding="utf-8") == "Answer text"
+
+
+def test_save_image_writes_base64_image(tmp_path, monkeypatch) -> None:
+    """Verify base64 image data is saved to the sandbox site directory."""
+    site_path = tmp_path / "site"
+    image_base64 = base64.b64encode(b"fake png bytes").decode("ascii")
+    monkeypatch.setattr("sandbox_agent.tools._SITE_DIRECTORY", site_path)
+
+    result = save_image("illustration.png", image_base64)
+
+    assert result == {
+        "success": True,
+        "message": "Created illustration.png",
+    }
+    assert (site_path / "illustration.png").read_bytes() == b"fake png bytes"
+
+
+def test_save_shared_image_artifact_copies_shared_file(tmp_path, monkeypatch) -> None:
+    """Verify shared image artifacts can be copied into the web root."""
+    site_path = tmp_path / "site"
+    shared_path = tmp_path / "shared"
+    source_path = shared_path / "artist_agent" / "illustration.png"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_bytes(b"fake png bytes")
+    monkeypatch.setenv("SANDBOX_SHARED_DIR", str(shared_path))
+    monkeypatch.setattr("sandbox_agent.tools._SITE_DIRECTORY", site_path)
+
+    result = save_shared_image_artifact(
+        "illustration.png",
+        "artist_agent/illustration.png",
+    )
+
+    assert result == {
+        "success": True,
+        "message": "Created illustration.png",
+    }
+    assert (site_path / "illustration.png").read_bytes() == b"fake png bytes"
+
+
+def test_save_shared_image_artifact_rejects_parent_escape(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Verify shared artifact paths cannot escape the shared directory."""
+    site_path = tmp_path / "site"
+    shared_path = tmp_path / "shared"
+    outside_path = tmp_path / "outside.png"
+    outside_path.write_bytes(b"outside")
+    monkeypatch.setenv("SANDBOX_SHARED_DIR", str(shared_path))
+    monkeypatch.setattr("sandbox_agent.tools._SITE_DIRECTORY", site_path)
+
+    result = save_shared_image_artifact("illustration.png", "../outside.png")
+
+    assert result == {
+        "success": False,
+        "message": "Failed to create `illustration.png",
+    }
+    assert not (site_path / "illustration.png").exists()
+
+
+def test_save_image_rejects_invalid_base64(tmp_path, monkeypatch) -> None:
+    """Verify invalid image data is reported as a failed create operation."""
+    site_path = tmp_path / "site"
+    monkeypatch.setattr("sandbox_agent.tools._SITE_DIRECTORY", site_path)
+
+    result = save_image("illustration.png", "not base64")
+
+    assert result == {
+        "success": False,
+        "message": "Failed to create `illustration.png",
+    }
+    assert not (site_path / "illustration.png").exists()
+
+
+def test_save_image_rejects_parent_directory_escape(tmp_path, monkeypatch) -> None:
+    """Verify image artifacts cannot be saved outside the sandbox site."""
+    site_path = tmp_path / "site"
+    image_base64 = base64.b64encode(b"fake png bytes").decode("ascii")
+    monkeypatch.setattr("sandbox_agent.tools._SITE_DIRECTORY", site_path)
+
+    result = save_image("../illustration.png", image_base64)
+
+    assert result == {
+        "success": False,
+        "message": "Failed to create `../illustration.png",
+    }
+    assert not (tmp_path / "illustration.png").exists()

@@ -12,20 +12,37 @@ _OUTPUT_DIRECTORY = Path("/sandbox-output")
 _SITE_DIRECTORY = _OUTPUT_DIRECTORY / "site"
 _DEFAULT_MODEL = "gpt-4.1-mini"
 _AGENT_PROMPT = """
-Create a single basic-style HTML document named index.html that lists the active
-items returned by the get_active_items tool.
+Create a small movie-poster preview page named index.html, one generated
+illustration image named illustration.png, and one final movie poster image
+named poster.png.
 
-Use the get_active_items tool first. Treat its response as a JSON array of item
-records. Build a friendly, self-contained page that summarizes the active items
-and shows their id, item_key, title, status, notes, quantity, created_at, and
-updated_at values. Use embedded CSS in a <style> block so the page is readable
-and pleasant, but keep the design simple.
+Use the get_movie_details tool first. Ask for an original movie concept suitable
+for a dramatic illustrated poster. Treat the response as a JSON object with
+title, tagline, synopsis, genre, and visual_style fields.
 
-Before saving the document, call the add_company_header tool with the complete
-HTML document you prepared. Treat the tool response as the finished HTML. Save
-that finished HTML document with the save_html_document tool. After saving
-index.html, save a short status message with the save_answer tool. The status
-message should say which file was created and how many active items it lists.
+Call the get_movie_illustration tool exactly once with the movie details JSON.
+Treat the response as a JSON object with artifact_path, mime_type, model, size,
+byte_count, and prompt fields. Copy the artifact_path value to illustration.png
+with the save_shared_image_artifact tool. Do not call generate_image,
+generate_image_artifact, or save_image directly.
+
+Call the get_movie_poster tool exactly once with a JSON object containing two
+fields: movie, set to the movie details object, and illustration, set to the
+illustration metadata object returned by get_movie_illustration. Treat the
+response as a JSON object with artifact_path, mime_type, model, size, byte_count,
+prompt, and illustration_reference_path fields. Copy the artifact_path value to
+poster.png with the save_shared_image_artifact tool.
+
+Build a friendly, self-contained page that references illustration.png with an
+<img> element, references poster.png with another <img> element, and presents
+the movie title, tagline, genre, synopsis, visual style, artist illustration
+prompt, and poster composition prompt. Use embedded CSS in a <style> block so
+the page is readable and pleasant, but keep the design simple.
+
+Save the finished HTML document with the save_html_document tool. After saving
+index.html, illustration.png, and poster.png, save a short status message with
+the save_answer tool. The status message should say which files were created and
+which movie title was used.
 """
 
 
@@ -34,10 +51,12 @@ def create_openai_agent(model: str = _DEFAULT_MODEL) -> Agent:
     from agents import Agent
 
     from .openai_tools import (
-        add_company_header_tool,
-        get_active_items_tool,
+        get_movie_details_tool,
+        get_movie_illustration_tool,
+        get_movie_poster_tool,
         save_answer_tool,
         save_html_document_tool,
+        save_shared_image_artifact_tool,
     )
 
     return Agent(
@@ -45,14 +64,17 @@ def create_openai_agent(model: str = _DEFAULT_MODEL) -> Agent:
         model=model,
         instructions=(
             "You are a careful web page builder. Use the provided tools to "
-            "retrieve the active item records, ask the company header agent "
-            "for the finished HTML, save exactly one HTML file, and save the "
-            "final status message. Do not finish until all four tool calls "
-            "have succeeded."
+            "retrieve structured movie details, request one illustration, "
+            "request one final poster, save exactly two image files, save "
+            "exactly one HTML file, and save the final status message. Do not "
+            "finish until all seven "
+            "tool calls have succeeded."
         ),
         tools=[
-            get_active_items_tool,
-            add_company_header_tool,
+            get_movie_details_tool,
+            get_movie_illustration_tool,
+            get_movie_poster_tool,
+            save_shared_image_artifact_tool,
             save_html_document_tool,
             save_answer_tool,
         ],
@@ -67,6 +89,6 @@ def run_html_element_agent(model: str = _DEFAULT_MODEL) -> str:
     result = Runner.run_sync(
         create_openai_agent(model),
         _AGENT_PROMPT,
-        max_turns=10,
+        max_turns=14,
     )
     return str(result.final_output)

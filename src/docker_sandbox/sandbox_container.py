@@ -49,8 +49,12 @@ from .sandbox_plan import (
 
 _DOCKER_EXECUTABLE = "docker"
 _REMOTE_OUTPUT_DIRECTORY = "/sandbox-output"
+_REMOTE_SHARED_DIRECTORY = "/sandbox-shared"
 _REMOTE_LANDLOCK_POLICY_PATH = f"{_REMOTE_OUTPUT_DIRECTORY}/landlock-policy.json"
 _REMOTE_SOURCE_DIRECTORY = "/sandbox-source/src"
+_SHARED_VOLUME_CAPABILITY = "shared_volume"
+_SHARED_DIRECTORY_NAME = "shared"
+_SHARED_DIRECTORY_ENVIRONMENT_VARIABLE = "SANDBOX_SHARED_DIR"
 _CONTAINER_NAME_PREFIX = "sandbox-agent-run"
 _GATEWAY_CONTAINER_NAME_PREFIX = "sandbox-agent-gateway"
 _NETWORK_NAME_PREFIX = "sandbox-agent-net"
@@ -131,6 +135,9 @@ _MARIADB_DATABASE_NAME = "agent_allowed"
 _MARIADB_DEFAULT_PORT = 3306
 _OPENAI_API_KEY_ENVIRONMENT_VARIABLE = "OPENAI_API_KEY"
 _OPENAI_BASE_URL_ENVIRONMENT_VARIABLE = "OPENAI_BASE_URL"
+_OPENAI_CAPABILITY = "openai"
+_OPENAI_AGENTS_CAPABILITY = "openai_agents"
+_OPENAI_PACKAGE = "openai==2.45.0"
 _JINA_READER_IMAGE_NAME = "ghcr.io/jina-ai/reader:oss"
 _JINA_READER_CONTAINER_NAME_PREFIX = "jina-reader"
 _JINA_READER_ALIAS = "jina-reader"
@@ -227,6 +234,7 @@ def run_sandbox_container(
         _get_container_ssh_agent_socket(configuration),
         configuration.profile.browser_debugging,
         configuration.profile.browser_surface,
+        _get_mounted_shared_directory(configuration),
     )
     _write_squid_configuration(configuration, run_directory, config_data)
     _write_mcp_sidecar_exposure(configuration, run_directory)
@@ -494,6 +502,11 @@ def _run_agent_containers(
     for agent_plan in plan.agents:
         agent_output_directory = agents_directory / agent_plan.agent_id
         _prepare_agent_output_directory(run_directory, agent_output_directory)
+        _write_agent_landlock_policy(
+            configuration,
+            agent_output_directory,
+            agent_plan,
+        )
         agent_remote_run_directory = _build_agent_remote_run_directory(
             remote_run_directory,
             agent_plan,
@@ -612,6 +625,7 @@ def _start_supporting_a2a_agent(
 ) -> AgentContainerRunResult:
     agent_output_directory = agents_directory / agent_plan.agent_id
     _prepare_agent_output_directory(run_directory, agent_output_directory)
+    _write_agent_landlock_policy(configuration, agent_output_directory, agent_plan)
     agent_remote_run_directory = _build_agent_remote_run_directory(
         remote_run_directory,
         agent_plan,
@@ -680,6 +694,7 @@ def _run_entry_agent_container(
 ) -> tuple[_InteractiveProcessResult, AgentContainerRunResult]:
     agent_output_directory = agents_directory / agent_plan.agent_id
     _prepare_agent_output_directory(run_directory, agent_output_directory)
+    _write_agent_landlock_policy(configuration, agent_output_directory, agent_plan)
     agent_remote_run_directory = _build_agent_remote_run_directory(
         remote_run_directory,
         agent_plan,
@@ -798,6 +813,15 @@ def _prepare_agent_output_directory(
             landlock_policy_path,
             agent_output_directory / "landlock-policy.json",
         )
+
+
+def _write_agent_landlock_policy(
+    configuration: DockerConfiguration,
+    agent_output_directory: Path,
+    agent_plan: ResolvedAgentPlan,
+) -> None:
+    agent_configuration = _agent_container_configuration(configuration, agent_plan)
+    _write_landlock_policy(agent_configuration, agent_output_directory)
 
 
 def _build_agent_remote_run_directory(
@@ -1484,15 +1508,24 @@ def _build_mcp_sidecar_image_build_command(
         / "dockerfile"
         / "Dockerfile"
     )
-    return [
+    command = [
         _DOCKER_EXECUTABLE,
         "build",
         "--file",
         str(dockerfile_path),
         "--tag",
         _MCP_SIDECAR_IMAGE_NAME,
-        str(configuration.build_context),
     ]
+    extra_packages = _build_mcp_sidecar_extra_python_packages(configuration)
+    if extra_packages:
+        command.extend(
+            [
+                "--build-arg",
+                f"MCP_SIDECAR_EXTRA_PACKAGES={extra_packages}",
+            ]
+        )
+    command.append(str(configuration.build_context))
+    return command
 
 
 def _build_mcp_sidecar_run_command(
@@ -1548,6 +1581,7 @@ def _build_mcp_sidecar_run_command(
             f"{_MCP_SIDECAR_EXPOSURE_PATH_ENVIRONMENT_VARIABLE}={exposure_path}",
         ]
     )
+    command.extend(_build_mcp_sidecar_openai_environment_options(configuration))
     command.extend(_build_mcp_sidecar_database_environment_options(configuration))
     command.extend(
         [
@@ -1568,6 +1602,49 @@ def _build_mcp_sidecar_run_command(
         ]
     )
     return command
+
+
+def _build_mcp_sidecar_extra_python_packages(
+    configuration: DockerConfiguration,
+) -> str:
+    packages = []
+    if _mcp_sidecar_has_openai_capability(configuration):
+        packages.append(_OPENAI_PACKAGE)
+
+    return " ".join(packages)
+
+
+def _build_mcp_sidecar_openai_environment_options(
+    configuration: DockerConfiguration,
+) -> list[str]:
+    if not _mcp_sidecar_has_openai_capability(configuration):
+        return []
+
+    return ["--env", _OPENAI_API_KEY_ENVIRONMENT_VARIABLE]
+
+
+def _mcp_sidecar_has_openai_capability(configuration: DockerConfiguration) -> bool:
+    return bool(
+        {
+            _OPENAI_CAPABILITY,
+            _OPENAI_AGENTS_CAPABILITY,
+        }.intersection(_mcp_sidecar_capabilities(configuration))
+    )
+
+
+def _mcp_sidecar_capabilities(configuration: DockerConfiguration) -> tuple[str, ...]:
+    plan = configuration.resolved_sandbox_plan
+    if plan is not None:
+        return plan.mcp_sidecar.capabilities
+
+    return tuple(
+        dict.fromkeys(
+            (
+                *configuration.mcp_sidecar_container_capabilities,
+                *configuration.mcp_sidecar_application_capabilities,
+            )
+        )
+    )
 
 
 def _build_mcp_sidecar_no_proxy(configuration: DockerConfiguration) -> str:
@@ -2968,6 +3045,7 @@ def _build_config_data(
     ssh_agent_socket: str | None = None,
     browser_debugging: BrowserDebuggingProfile | None = None,
     browser_surface: BrowserSurfaceProfile | None = None,
+    mounted_shared_directory: str | None = None,
 ) -> dict[str, object]:
     return {
         "working_directory": remote_run_directory,
@@ -2975,7 +3053,7 @@ def _build_config_data(
         "denied_directory": denied_directory,
         "runtime_user_directory": f"/home/{guest_user}",
         "runtime_temp_directory": "/tmp",
-        "mounted_shared_directory": None,
+        "mounted_shared_directory": mounted_shared_directory,
         "operating_system": "Linux",
         "allowed_domain": "example.com",
         "denied_domain": "example.net",
@@ -3067,6 +3145,13 @@ def _get_browser_chromium_arguments(
     return list(browser_surface.chromium_arguments)
 
 
+def _get_mounted_shared_directory(configuration: DockerConfiguration) -> str | None:
+    if _SHARED_VOLUME_CAPABILITY not in configuration.enabled_capabilities:
+        return None
+
+    return _REMOTE_SHARED_DIRECTORY
+
+
 def _get_allow_camera_capture(
     browser_surface: BrowserSurfaceProfile | None,
 ) -> bool:
@@ -3147,6 +3232,9 @@ def _build_docker_run_command(
             "--user",
             container_configuration.guest_user,
         ]
+    )
+    command.extend(
+        _build_shared_volume_mount_options(container_configuration, run_directory)
     )
     if network_name is not None:
         command.extend(["--network", network_name])
@@ -3403,6 +3491,19 @@ def _build_source_mount(configuration: DockerConfiguration) -> str:
     )
 
 
+def _build_shared_volume_mount_options(
+    configuration: DockerConfiguration,
+    run_directory: Path,
+) -> list[str]:
+    if _SHARED_VOLUME_CAPABILITY not in configuration.enabled_capabilities:
+        return []
+
+    shared_directory = run_directory / _SHARED_DIRECTORY_NAME
+    shared_directory.mkdir(parents=True, exist_ok=True)
+    mount = f"type=bind,source={shared_directory},target={_REMOTE_SHARED_DIRECTORY}"
+    return ["--mount", mount]
+
+
 def _build_container_environment(
     configuration: DockerConfiguration,
     environment_variables: Mapping[str, str],
@@ -3415,6 +3516,10 @@ def _build_container_environment(
     container_environment[CONTAINER_MARKER_ENVIRONMENT_VARIABLE] = (
         CONTAINER_MARKER_VALUE
     )
+    if _SHARED_VOLUME_CAPABILITY in configuration.enabled_capabilities:
+        container_environment[_SHARED_DIRECTORY_ENVIRONMENT_VARIABLE] = (
+            _REMOTE_SHARED_DIRECTORY
+        )
     ssh_agent_socket = _get_container_ssh_agent_socket(configuration)
     if ssh_agent_socket is not None:
         container_environment["SSH_AUTH_SOCK"] = ssh_agent_socket

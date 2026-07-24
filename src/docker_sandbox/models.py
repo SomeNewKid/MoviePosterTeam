@@ -310,6 +310,8 @@ class DockerConfiguration:
     enabled_capabilities: frozenset[str] = frozenset()
     mcp_sidecar_tools: tuple[str, ...] = ()
     mcp_sidecar_resources: tuple[str, ...] = ()
+    mcp_sidecar_container_capabilities: tuple[str, ...] = ()
+    mcp_sidecar_application_capabilities: tuple[str, ...] = ()
     haproxy: HAProxyConfiguration | None = None
     ollama_models: tuple[str, ...] = ()
     ollama_image_name: str | None = None

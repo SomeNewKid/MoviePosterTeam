@@ -463,6 +463,29 @@ def test_mcp_sidecar_image_commands_use_static_dockerfile() -> None:
     ]
 
 
+def test_mcp_sidecar_image_build_installs_openai_capability_package() -> None:
+    """Verify MCP sidecar OpenAI capability adds the OpenAI package."""
+    configuration = _create_mcp_openai_configuration()
+
+    build_command = _build_mcp_sidecar_image_build_command(configuration)
+
+    assert "--build-arg" in build_command
+    assert "MCP_SIDECAR_EXTRA_PACKAGES=openai==2.45.0" in build_command
+    assert build_command[-1] == "."
+
+
+def test_mcp_sidecar_run_command_copies_openai_api_key_for_openai() -> None:
+    """Verify MCP sidecar OpenAI capability copies the host API key."""
+    command = _build_mcp_sidecar_run_command(
+        _create_mcp_openai_configuration(),
+        Path(".docker_sandbox") / "runs" / "run-1",
+        "sandbox-agent-net-1",
+        "mcp-sidecar-1",
+    )
+
+    assert "OPENAI_API_KEY" in _option_values(command, "--env")
+
+
 def test_start_mcp_sidecar_rebuilds_image_before_running(
     tmp_path: Path,
     monkeypatch,
@@ -857,6 +880,77 @@ def test_agent_docker_run_command_uses_agent_specific_image(
 
     assert "sandbox-agent/sandbox-agent:agent-two" in command
     assert configuration.profile.image_name not in command
+
+
+def test_agent_docker_run_command_mounts_declared_shared_volume(
+    tmp_path: Path,
+) -> None:
+    """Verify only shared_volume agents receive the shared artifact mount."""
+    configuration = _create_network_configuration()
+    run_directory = tmp_path / "run-1"
+    agent_plan = ResolvedAgentPlan(
+        agent_id="artist_agent",
+        module="artist_agent",
+        image_name="sandbox-agent/sandbox-agent:artist",
+        container_name="sandbox-agent-run-1-artist-agent",
+        ip_address="172.28.0.12",
+    )
+    agent_profile = replace(
+        configuration.profile,
+        image_name="sandbox-agent/sandbox-agent:artist",
+    )
+    configuration = replace(
+        configuration,
+        agent_image_configurations=(
+            AgentImageConfiguration(
+                agent_id="artist_agent",
+                dockerfile_path=tmp_path / "Dockerfile",
+                profile=agent_profile,
+                generated_dockerfile="FROM python:3.12-slim",
+                resolved_spec={},
+                environment_variables=(),
+                local_environment_variable_names=frozenset(),
+                enabled_capabilities=frozenset({"network", "shared_volume"}),
+            ),
+        ),
+    )
+
+    command = _build_docker_run_command(
+        configuration=configuration,
+        run_directory=run_directory,
+        container_name=agent_plan.container_name,
+        remote_run_directory="/tmp/sandbox-tester/run-1/agents/artist_agent",
+        network_name="sandbox-agent-net-1",
+        agent_plan=agent_plan,
+    )
+
+    assert (
+        f"type=bind,source={run_directory / 'shared'},target=/sandbox-shared"
+        in _option_values(command, "--mount")
+    )
+    assert "SANDBOX_SHARED_DIR=/sandbox-shared" in _option_values(command, "--env")
+
+
+def test_agent_docker_run_command_omits_shared_volume_by_default(
+    tmp_path: Path,
+) -> None:
+    """Verify agents without shared_volume do not receive the shared mount."""
+    configuration = _create_network_configuration()
+    run_directory = tmp_path / "run-1"
+
+    command = _build_docker_run_command(
+        configuration=configuration,
+        run_directory=run_directory,
+        container_name="sandbox-agent-run-1",
+        remote_run_directory="/tmp/sandbox-tester/run-1",
+        network_name="sandbox-agent-net-1",
+    )
+
+    assert all(
+        "target=/sandbox-shared" not in mount
+        for mount in _option_values(command, "--mount")
+    )
+    assert "SANDBOX_SHARED_DIR=/sandbox-shared" not in _option_values(command, "--env")
 
 
 def test_agent_docker_run_command_includes_ollama_environment(
@@ -1553,6 +1647,15 @@ def _create_network_configuration() -> DockerConfiguration:
         build_context=Path("."),
         guest_user="sandbox",
         profile=profile,
+    )
+
+
+def _create_mcp_openai_configuration() -> DockerConfiguration:
+    configuration = _create_network_configuration()
+    return replace(
+        configuration,
+        mcp_sidecar_container_capabilities=("network",),
+        mcp_sidecar_application_capabilities=("openai",),
     )
 
 

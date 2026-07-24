@@ -18,6 +18,7 @@ from .resources import (
     get_company_name,
 )
 from .tools import (
+    generate_image,
     get_active_items,
     get_html_element_name,
     jina_read_url,
@@ -70,6 +71,17 @@ _TOOL_REGISTRY = {
             "explained. Returns a short string containing the element name."
         ),
         handler=get_html_element_name,
+    ),
+    "generate_image": _ToolDefinition(
+        name="generate_image",
+        description=(
+            "Generate one image with OpenAI from a required prompt and an "
+            "optional base64-encoded visual reference image. Use the optional "
+            "image_reference_base64 argument only to guide the generated image "
+            "from reference material such as a sketch, layout, or style cue; "
+            "the tool returns base64 image data and does not save artifacts."
+        ),
+        handler=generate_image,
     ),
     "microsoft_docs_search": _ToolDefinition(
         name="microsoft_docs_search",

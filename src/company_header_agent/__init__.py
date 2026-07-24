@@ -1,1 +1,0 @@
-"""Company header agent package."""

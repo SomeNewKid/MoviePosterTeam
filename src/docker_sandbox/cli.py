@@ -212,6 +212,12 @@ def _configuration_from_arguments(
         enabled_capabilities=frozenset(spec.capabilities),
         mcp_sidecar_tools=spec.mcp_sidecar_tools,
         mcp_sidecar_resources=spec.mcp_sidecar_resources,
+        mcp_sidecar_container_capabilities=(
+            sandbox_run_spec.mcp_sidecar.container_capabilities
+        ),
+        mcp_sidecar_application_capabilities=(
+            sandbox_run_spec.mcp_sidecar.application_capabilities
+        ),
         haproxy=spec.haproxy,
         ollama_models=spec.ollama_models,
         ollama_image_name=spec.ollama_image_name,
