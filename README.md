@@ -9,12 +9,11 @@ The current default workload runs four agents:
 - `writer_agent`: a supporting A2A agent. It creates structured movie JSON with
   a title, tagline, synopsis, genre, and visual style.
 - `artist_agent`: a supporting A2A task agent. It asks the MCP sidecar to
-  generate one illustration from the movie details, writes it to the shared
-  artifact volume, and returns compact artifact metadata as a task artifact.
+  generate one illustration from the movie details and returns the generated
+  image as an A2A task artifact.
 - `poster_agent`: a supporting A2A task agent. It uses the illustration as a
-  reference image, asks the MCP sidecar to generate a final movie poster, writes
-  it to the shared artifact volume, and returns compact artifact metadata as a
-  task artifact.
+  reference image, asks the MCP sidecar to generate a final movie poster, and
+  returns the generated poster as an A2A task artifact.
 - `sandbox_agent`: the entry agent. It asks `writer_agent` for movie details,
   asks `artist_agent` for the illustration, asks `poster_agent` for the final
   poster, and owns the final `index.html`, `illustration.png`, and `poster.png`
@@ -50,18 +49,16 @@ On each default run:
 9. `sandbox_agent` gives the movie JSON to `artist_agent` by starting an A2A
    task and polling `tasks/get`.
 10. `artist_agent` calls the MCP tool `generate_image` to create one cinematic
-    illustration, writes it under `/sandbox-shared/artist_agent/`, and returns
-    compact artifact metadata as a task artifact.
+    illustration and returns the generated image data as a task artifact.
 11. `sandbox_agent` gives the movie JSON and illustration metadata to
     `poster_agent` by starting another A2A task and polling `tasks/get`.
 12. `poster_agent` calls the MCP tool `generate_image` with the illustration as
     a reference image to create a complete movie poster containing the movie
-    name, tagline, illustration, and poster-style design content. It writes the
-    poster under `/sandbox-shared/poster_agent/` and returns compact artifact
-    metadata as a task artifact.
-13. `sandbox_agent` saves the generated illustration as
+    name, tagline, illustration, and poster-style design content. It returns the
+    generated poster image data as a task artifact.
+13. The local `get_movie_illustration` tool saves the generated illustration as
     `/sandbox-output/site/illustration.png`.
-14. `sandbox_agent` saves the generated poster as
+14. The local `get_movie_poster` tool saves the generated poster as
     `/sandbox-output/site/poster.png`.
 15. `sandbox_agent` prepares an HTML document that displays both images and
     presents the movie title, tagline, synopsis, genre, and visual style.
@@ -170,7 +167,6 @@ module = "sandbox_agent"
 
 container_capabilities = [
   "network",
-  "shared_volume",
 ]
 
 application_capabilities = [
@@ -223,7 +219,6 @@ module = "artist_agent"
 
 container_capabilities = [
   "network",
-  "shared_volume",
 ]
 
 application_capabilities = [
@@ -248,7 +243,6 @@ module = "poster_agent"
 
 container_capabilities = [
   "network",
-  "shared_volume",
 ]
 
 application_capabilities = [
@@ -311,12 +305,12 @@ The host-side source is a per-run directory:
 .docker_sandbox/runs/run-YYYY-mm-dd-HH-MM-SS/shared/
 ```
 
-The default movie-poster workflow uses this for large image handoffs:
-`artist_agent` writes `artist_agent/illustration.png` into the shared volume,
-`poster_agent` reads that illustration as a reference image and writes
-`poster_agent/poster.png`, and `sandbox_agent` copies both artifacts into its
-own web output directory. This keeps large base64 image data out of
-model-visible A2A/tool responses.
+The default movie-poster workflow no longer declares `shared_volume`; it uses
+A2A task artifacts for image handoffs instead. The local `sandbox_agent` tool
+functions receive image data over A2A, save `illustration.png` and `poster.png`
+into their output directory, and return compact metadata to the model. The
+capability remains available for workloads that prefer file-based cross-agent
+artifact exchange.
 
 ### Squid
 

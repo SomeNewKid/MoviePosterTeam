@@ -20,6 +20,8 @@ from a2a_support.client import (
 _OUTPUT_DIRECTORY = Path("/sandbox-output")
 _SITE_DIRECTORY = _OUTPUT_DIRECTORY / "site"
 _ANSWER_FILE_PATH = _OUTPUT_DIRECTORY / "answer.txt"
+_ILLUSTRATION_FILE_NAME = "illustration.png"
+_POSTER_FILE_NAME = "poster.png"
 _SHARED_DIRECTORY_ENVIRONMENT_VARIABLE = "SANDBOX_SHARED_DIR"
 _DEFAULT_SHARED_DIRECTORY = Path("/sandbox-shared")
 _MCP_SIDECAR_URL_ENVIRONMENT_VARIABLE = "MCP_SIDECAR_URL"
@@ -270,33 +272,36 @@ def get_movie_details(
 
 
 def get_movie_illustration(movie_details: str) -> str:
-    """Return generated illustration JSON from the Artist Agent task."""
+    """Request an illustration task, save its image, and return compact JSON."""
     artist_base_url = os.environ.get(
         _ARTIST_AGENT_URL_ENVIRONMENT_VARIABLE,
         _DEFAULT_ARTIST_AGENT_URL,
     )
     agent_card = read_agent_card(artist_base_url)
     endpoint_url = read_agent_endpoint_url(agent_card)
-    return send_text_task_and_wait_for_text_artifact(
+    result_text = send_text_task_and_wait_for_text_artifact(
         endpoint_url,
         movie_details,
         request_id="artist-agent-task-request",
     )
+    return _save_a2a_image_result(result_text, _ILLUSTRATION_FILE_NAME)
 
 
 def get_movie_poster(poster_request: str) -> str:
-    """Return generated poster JSON from the Poster Agent task."""
+    """Request a poster task, save its image, and return compact JSON."""
     poster_base_url = os.environ.get(
         _POSTER_AGENT_URL_ENVIRONMENT_VARIABLE,
         _DEFAULT_POSTER_AGENT_URL,
     )
     agent_card = read_agent_card(poster_base_url)
     endpoint_url = read_agent_endpoint_url(agent_card)
-    return send_text_task_and_wait_for_text_artifact(
+    enriched_request = _add_illustration_reference_to_poster_request(poster_request)
+    result_text = send_text_task_and_wait_for_text_artifact(
         endpoint_url,
-        poster_request,
+        enriched_request,
         request_id="poster-agent-task-request",
     )
+    return _save_a2a_image_result(result_text, _POSTER_FILE_NAME)
 
 
 def save_image(file_name: str, image_base64: str) -> dict[str, bool | str]:
@@ -393,6 +398,47 @@ def save_answer(answer: str) -> dict[str, bool | str]:
 
 def _resolve_site_path(file_name: str) -> Path:
     return _resolve_child_path(_SITE_DIRECTORY, file_name)
+
+
+def _add_illustration_reference_to_poster_request(poster_request: str) -> str:
+    request = json.loads(poster_request)
+    if not isinstance(request, dict):
+        raise ValueError("Poster request must be a JSON object.")
+
+    illustration = request.get("illustration")
+    file_name = _ILLUSTRATION_FILE_NAME
+    if isinstance(illustration, dict):
+        requested_file_name = illustration.get("file_name")
+        if isinstance(requested_file_name, str) and requested_file_name.strip():
+            file_name = requested_file_name.strip()
+
+    image_path = _resolve_site_path(file_name)
+    image_bytes = image_path.read_bytes()
+    if not image_bytes:
+        raise ValueError("Illustration image artifact is empty.")
+
+    request["image_reference_base64"] = base64.b64encode(image_bytes).decode("ascii")
+    return json.dumps(request, sort_keys=True)
+
+
+def _save_a2a_image_result(result_text: str, file_name: str) -> str:
+    result = json.loads(result_text)
+    if not isinstance(result, dict):
+        raise ValueError("A2A image artifact result must be a JSON object.")
+
+    image_base64 = result.pop("image_base64", None)
+    if not isinstance(image_base64, str) or not image_base64:
+        raise ValueError("A2A image artifact result omitted image_base64.")
+
+    image_bytes = _decode_base64_image(image_base64)
+    image_path = _resolve_site_path(file_name)
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.write_bytes(image_bytes)
+    result["success"] = True
+    result["file_name"] = file_name
+    result["message"] = f"Created {file_name}"
+    result["byte_count"] = len(image_bytes)
+    return json.dumps(result, sort_keys=True)
 
 
 def _resolve_shared_path(artifact_path: str) -> Path:

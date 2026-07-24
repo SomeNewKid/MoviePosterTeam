@@ -5,14 +5,9 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-import os
-from pathlib import Path
 
 from .tools import generate_image
 
-_SHARED_DIRECTORY_ENVIRONMENT_VARIABLE = "SANDBOX_SHARED_DIR"
-_DEFAULT_SHARED_DIRECTORY = "/sandbox-shared"
-_ARTIFACT_DIRECTORY_NAME = "artist_agent"
 _ILLUSTRATION_FILE_NAME = "illustration.png"
 _REQUIRED_MOVIE_FIELDS = (
     "title",
@@ -24,19 +19,18 @@ _REQUIRED_MOVIE_FIELDS = (
 
 
 def run_artist_agent(movie_details: str) -> dict[str, object]:
-    """Generate one movie illustration and return shared artifact metadata."""
+    """Generate one movie illustration and return A2A artifact metadata."""
     movie = _read_movie_details(movie_details)
     prompt = _build_illustration_prompt(movie)
     result_text = generate_image(prompt)
     result = _read_generate_image_result(result_text)
     image_base64 = result.pop("image_base64")
     image_bytes = _decode_base64_image(image_base64)
-    artifact_path = _write_shared_image_artifact(image_bytes)
 
     return {
         "success": True,
-        "artifact_path": artifact_path,
         "file_name": _ILLUSTRATION_FILE_NAME,
+        "image_base64": image_base64,
         "mime_type": result.get("mime_type", "image/png"),
         "model": result.get("model", ""),
         "size": result.get("size", ""),
@@ -109,39 +103,6 @@ def _decode_base64_image(image_base64: str) -> bytes:
         return base64.b64decode(encoded_image, validate=True)
     except (binascii.Error, ValueError) as error:
         raise ValueError("Image data must be valid base64.") from error
-
-
-def _write_shared_image_artifact(image_bytes: bytes) -> str:
-    artifact_path = f"{_ARTIFACT_DIRECTORY_NAME}/{_ILLUSTRATION_FILE_NAME}"
-    image_path = _resolve_shared_path(artifact_path)
-    image_path.parent.mkdir(parents=True, exist_ok=True)
-    image_path.write_bytes(image_bytes)
-    return artifact_path
-
-
-def _resolve_shared_path(relative_path: str) -> Path:
-    shared_directory = Path(
-        os.environ.get(
-            _SHARED_DIRECTORY_ENVIRONMENT_VARIABLE,
-            _DEFAULT_SHARED_DIRECTORY,
-        )
-    )
-    child_path = shared_directory / relative_path
-    resolved_parent = shared_directory.resolve(strict=False)
-    resolved_child = child_path.resolve(strict=False)
-    if not _is_relative_to(resolved_child, resolved_parent):
-        raise OSError(f"Refusing to write outside shared directory: {relative_path}")
-
-    return resolved_child
-
-
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-    except ValueError:
-        return False
-
-    return True
 
 
 def _extract_json_object(text: str) -> str:

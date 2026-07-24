@@ -11,15 +11,11 @@ from poster_agent.openai_agent import run_poster_agent
 
 
 def test_run_poster_agent_uses_illustration_reference(
-    tmp_path,
     monkeypatch,
 ) -> None:
-    """Verify Poster Agent composes a poster from a shared illustration."""
-    shared_path = tmp_path / "shared"
-    illustration_path = shared_path / "artist_agent" / "illustration.png"
-    illustration_path.parent.mkdir(parents=True)
-    illustration_path.write_bytes(b"illustration bytes")
+    """Verify Poster Agent composes a poster from A2A image data."""
     calls = []
+    image_reference = base64.b64encode(b"illustration bytes").decode("ascii")
 
     def fake_generate_image(prompt: str, image_reference_base64: str | None) -> str:
         calls.append((prompt, image_reference_base64))
@@ -32,23 +28,19 @@ def test_run_poster_agent_uses_illustration_reference(
             }
         )
 
-    monkeypatch.setenv("SANDBOX_SHARED_DIR", str(shared_path))
     monkeypatch.setattr("poster_agent.openai_agent.generate_image", fake_generate_image)
 
-    result = run_poster_agent(_poster_request_json())
+    result = run_poster_agent(_poster_request_json(image_reference))
 
     assert result["success"] is True
-    assert result["artifact_path"] == "poster_agent/poster.png"
     assert result["file_name"] == "poster.png"
+    assert result["image_base64"] == base64.b64encode(b"poster bytes").decode("ascii")
     assert result["byte_count"] == 12
-    assert result["illustration_reference_path"] == "artist_agent/illustration.png"
+    assert result["illustration_reference"] == "image_reference_base64"
     assert "complete vertical theatrical movie poster" in calls[0][0]
     assert "Moon Harbor" in calls[0][0]
     assert "The tide remembers." in calls[0][0]
-    assert calls[0][1] == base64.b64encode(b"illustration bytes").decode("ascii")
-    assert (shared_path / "poster_agent" / "poster.png").read_bytes() == (
-        b"poster bytes"
-    )
+    assert calls[0][1] == image_reference
 
 
 def test_a2a_message_send_returns_poster_json(monkeypatch) -> None:
@@ -59,14 +51,14 @@ def test_a2a_message_send_returns_poster_json(monkeypatch) -> None:
         assert request["movie"]["title"] == "Moon Harbor"
         return {
             "success": True,
-            "artifact_path": "poster_agent/poster.png",
             "file_name": "poster.png",
+            "image_base64": base64.b64encode(b"poster bytes").decode("ascii"),
             "mime_type": "image/png",
             "model": "gpt-image-1",
             "size": "1024x1024",
             "byte_count": 12,
             "prompt": "Create a poster for Moon Harbor.",
-            "illustration_reference_path": "artist_agent/illustration.png",
+            "illustration_reference": "image_reference_base64",
         }
 
     monkeypatch.setattr(
@@ -82,7 +74,14 @@ def test_a2a_message_send_returns_poster_json(monkeypatch) -> None:
             "params": {
                 "message": {
                     "role": "user",
-                    "parts": [{"kind": "text", "text": _poster_request_json()}],
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": _poster_request_json(
+                                base64.b64encode(b"illustration bytes").decode("ascii")
+                            ),
+                        }
+                    ],
                 }
             },
         }
@@ -128,8 +127,8 @@ def test_a2a_message_send_returns_poster_json(monkeypatch) -> None:
     part = parts[0]
     assert isinstance(part, dict)
     poster = json.loads(part["text"])
-    assert poster["artifact_path"] == "poster_agent/poster.png"
-    assert "image_base64" not in poster
+    assert poster["file_name"] == "poster.png"
+    assert poster["image_base64"] == base64.b64encode(b"poster bytes").decode("ascii")
     assert part["metadata"] == {"mimeType": "application/json"}
 
 
@@ -151,7 +150,7 @@ def test_a2a_tasks_get_rejects_unknown_task_id() -> None:
     assert error["code"] == -32001
 
 
-def _poster_request_json() -> str:
+def _poster_request_json(image_reference_base64: str) -> str:
     return json.dumps(
         {
             "movie": {
@@ -162,7 +161,8 @@ def _poster_request_json() -> str:
                 "visual_style": "moonlit ocean, silver-blue palette",
             },
             "illustration": {
-                "artifact_path": "artist_agent/illustration.png",
+                "file_name": "illustration.png",
             },
+            "image_reference_base64": image_reference_base64,
         }
     )

@@ -9,11 +9,10 @@ from artist_agent.a2a_server import _handle_json_rpc_request
 from artist_agent.openai_agent import run_artist_agent
 
 
-def test_run_artist_agent_writes_shared_artifact_from_movie_json(
-    tmp_path,
+def test_run_artist_agent_returns_a2a_image_artifact_from_movie_json(
     monkeypatch,
 ) -> None:
-    """Verify Artist Agent turns movie details into a shared image artifact."""
+    """Verify Artist Agent returns generated image data as A2A metadata."""
     calls = []
 
     def fake_generate_image(prompt: str) -> str:
@@ -28,7 +27,6 @@ def test_run_artist_agent_writes_shared_artifact_from_movie_json(
         )
 
     monkeypatch.setattr("artist_agent.openai_agent.generate_image", fake_generate_image)
-    monkeypatch.setenv("SANDBOX_SHARED_DIR", str(tmp_path / "shared"))
 
     result = run_artist_agent(
         json.dumps(
@@ -43,8 +41,8 @@ def test_run_artist_agent_writes_shared_artifact_from_movie_json(
     )
 
     assert result["success"] is True
-    assert result["artifact_path"] == "artist_agent/illustration.png"
     assert result["file_name"] == "illustration.png"
+    assert result["image_base64"] == "aW1hZ2U="
     assert result["mime_type"] == "image/png"
     assert result["model"] == "gpt-image-1"
     assert result["size"] == "1024x1024"
@@ -52,9 +50,6 @@ def test_run_artist_agent_writes_shared_artifact_from_movie_json(
     assert result["prompt"] == calls[0]
     assert "Moon Harbor" in calls[0]
     assert "Do not include typography" in calls[0]
-    assert (tmp_path / "shared" / "artist_agent" / "illustration.png").read_bytes() == (
-        b"image"
-    )
 
 
 def test_a2a_message_send_returns_illustration_json(monkeypatch) -> None:
@@ -65,8 +60,8 @@ def test_a2a_message_send_returns_illustration_json(monkeypatch) -> None:
         assert movie["title"] == "Moon Harbor"
         return {
             "success": True,
-            "artifact_path": "artist_agent/illustration.png",
             "file_name": "illustration.png",
+            "image_base64": "aW1hZ2U=",
             "mime_type": "image/png",
             "model": "gpt-image-1",
             "size": "1024x1024",
@@ -138,8 +133,8 @@ def test_a2a_message_send_returns_illustration_json(monkeypatch) -> None:
     part = parts[0]
     assert isinstance(part, dict)
     illustration = json.loads(part["text"])
-    assert illustration["artifact_path"] == "artist_agent/illustration.png"
-    assert "image_base64" not in illustration
+    assert illustration["file_name"] == "illustration.png"
+    assert illustration["image_base64"] == "aW1hZ2U="
     assert part["metadata"] == {"mimeType": "application/json"}
 
 

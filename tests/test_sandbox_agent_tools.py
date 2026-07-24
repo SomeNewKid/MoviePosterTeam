@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 
 import pytest
 
@@ -315,9 +316,11 @@ def test_get_movie_details_calls_writer_agent(monkeypatch) -> None:
     ]
 
 
-def test_get_movie_illustration_calls_artist_agent(monkeypatch) -> None:
-    """Verify illustration requests are sent as artist A2A tasks."""
+def test_get_movie_illustration_saves_a2a_image_artifact(tmp_path, monkeypatch) -> None:
+    """Verify artist A2A image artifacts are saved before returning metadata."""
     calls = []
+    site_path = tmp_path / "site"
+    image_base64 = base64.b64encode(b"illustration bytes").decode("ascii")
 
     def fake_read_card(base_url: str) -> dict[str, object]:
         calls.append(("card", base_url))
@@ -325,9 +328,21 @@ def test_get_movie_illustration_calls_artist_agent(monkeypatch) -> None:
 
     def fake_send_task(endpoint_url: str, text: str, request_id: str) -> str:
         calls.append(("task", endpoint_url, text, request_id))
-        return '{"artifact_path": "artist_agent/illustration.png"}'
+        return json.dumps(
+            {
+                "success": True,
+                "file_name": "illustration.png",
+                "image_base64": image_base64,
+                "mime_type": "image/png",
+                "model": "gpt-image-1",
+                "size": "1024x1024",
+                "byte_count": 18,
+                "prompt": "Create an illustration.",
+            }
+        )
 
     monkeypatch.setenv("ARTIST_AGENT_URL", "http://artist-agent:8080")
+    monkeypatch.setattr("sandbox_agent.tools._SITE_DIRECTORY", site_path)
     monkeypatch.setattr("sandbox_agent.tools.read_agent_card", fake_read_card)
     monkeypatch.setattr(
         "sandbox_agent.tools.send_text_task_and_wait_for_text_artifact",
@@ -337,7 +352,12 @@ def test_get_movie_illustration_calls_artist_agent(monkeypatch) -> None:
     movie_details = '{"title": "Moon Harbor"}'
     result = get_movie_illustration(movie_details)
 
-    assert result == '{"artifact_path": "artist_agent/illustration.png"}'
+    result_data = json.loads(result)
+    assert result_data["file_name"] == "illustration.png"
+    assert result_data["message"] == "Created illustration.png"
+    assert result_data["byte_count"] == 18
+    assert "image_base64" not in result_data
+    assert (site_path / "illustration.png").read_bytes() == b"illustration bytes"
     assert calls == [
         ("card", "http://artist-agent:8080"),
         (
@@ -349,9 +369,16 @@ def test_get_movie_illustration_calls_artist_agent(monkeypatch) -> None:
     ]
 
 
-def test_get_movie_poster_calls_poster_agent(monkeypatch) -> None:
-    """Verify poster requests are sent as poster A2A tasks."""
+def test_get_movie_poster_sends_reference_and_saves_a2a_image_artifact(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Verify poster A2A tasks receive a reference image and save the result."""
     calls = []
+    site_path = tmp_path / "site"
+    site_path.mkdir()
+    (site_path / "illustration.png").write_bytes(b"illustration bytes")
+    poster_base64 = base64.b64encode(b"poster bytes").decode("ascii")
 
     def fake_read_card(base_url: str) -> dict[str, object]:
         calls.append(("card", base_url))
@@ -359,25 +386,59 @@ def test_get_movie_poster_calls_poster_agent(monkeypatch) -> None:
 
     def fake_send_task(endpoint_url: str, text: str, request_id: str) -> str:
         calls.append(("task", endpoint_url, text, request_id))
-        return '{"artifact_path": "poster_agent/poster.png"}'
+        request = json.loads(text)
+        assert request["image_reference_base64"] == base64.b64encode(
+            b"illustration bytes"
+        ).decode("ascii")
+        return json.dumps(
+            {
+                "success": True,
+                "file_name": "poster.png",
+                "image_base64": poster_base64,
+                "mime_type": "image/png",
+                "model": "gpt-image-1",
+                "size": "1024x1024",
+                "byte_count": 12,
+                "prompt": "Create a poster.",
+                "illustration_reference": "image_reference_base64",
+            }
+        )
 
     monkeypatch.setenv("POSTER_AGENT_URL", "http://poster-agent:8080")
+    monkeypatch.setattr("sandbox_agent.tools._SITE_DIRECTORY", site_path)
     monkeypatch.setattr("sandbox_agent.tools.read_agent_card", fake_read_card)
     monkeypatch.setattr(
         "sandbox_agent.tools.send_text_task_and_wait_for_text_artifact",
         fake_send_task,
     )
 
-    poster_request = '{"movie": {"title": "Moon Harbor"}}'
+    poster_request = (
+        '{"movie": {"title": "Moon Harbor"}, '
+        '"illustration": {"file_name": "illustration.png"}}'
+    )
     result = get_movie_poster(poster_request)
 
-    assert result == '{"artifact_path": "poster_agent/poster.png"}'
+    result_data = json.loads(result)
+    assert result_data["file_name"] == "poster.png"
+    assert result_data["message"] == "Created poster.png"
+    assert result_data["byte_count"] == 12
+    assert "image_base64" not in result_data
+    assert (site_path / "poster.png").read_bytes() == b"poster bytes"
     assert calls == [
         ("card", "http://poster-agent:8080"),
         (
             "task",
             "http://poster-agent:8080/a2a",
-            poster_request,
+            json.dumps(
+                {
+                    "movie": {"title": "Moon Harbor"},
+                    "illustration": {"file_name": "illustration.png"},
+                    "image_reference_base64": base64.b64encode(
+                        b"illustration bytes"
+                    ).decode("ascii"),
+                },
+                sort_keys=True,
+            ),
             "poster-agent-task-request",
         ),
     ]

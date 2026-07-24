@@ -27,12 +27,11 @@ def test_create_openai_agent_uses_gpt_model_and_tools(monkeypatch) -> None:
         "tool:get_movie_details",
         "tool:get_movie_illustration",
         "tool:get_movie_poster",
-        "tool:save_shared_image_artifact",
         "tool:save_html_document",
         "tool:save_answer",
     ]
     assert (
-        "Do not finish until all seven tool calls have succeeded."
+        "Do not finish until all five tool calls have succeeded."
         in (calls[0]["instructions"])
     )
 
@@ -97,7 +96,6 @@ def test_run_html_element_agent_lets_model_sequence_tool_calls(
         "tool:get_movie_details",
         "tool:get_movie_illustration",
         "tool:get_movie_poster",
-        "tool:save_shared_image_artifact",
         "tool:save_html_document",
         "tool:save_answer",
     ]
@@ -107,12 +105,10 @@ def test_run_html_element_agent_lets_model_sequence_tool_calls(
     assert "get_movie_illustration tool" in calls[1]["prompt"]
     assert "get_movie_poster tool" in calls[1]["prompt"]
     assert "exactly once" in calls[1]["prompt"]
-    assert (
-        "Do not call generate_image,\ngenerate_image_artifact, or save_image directly."
-        in (calls[1]["prompt"])
-    )
-    assert "artifact_path" in calls[1]["prompt"]
-    assert "save_shared_image_artifact tool" in calls[1]["prompt"]
+    assert "Do not call generate_image" in calls[1]["prompt"]
+    assert "save_shared_image_artifact directly" in calls[1]["prompt"]
+    assert "saves illustration.png before" in calls[1]["prompt"]
+    assert "saves poster.png\nbefore" in calls[1]["prompt"]
     assert "illustration.png" in calls[1]["prompt"]
     assert "poster.png" in calls[1]["prompt"]
     assert "Treat the response as a JSON object" in calls[1]["prompt"]

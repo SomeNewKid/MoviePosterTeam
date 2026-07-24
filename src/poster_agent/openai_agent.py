@@ -5,14 +5,9 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-import os
-from pathlib import Path
 
 from .tools import generate_image
 
-_SHARED_DIRECTORY_ENVIRONMENT_VARIABLE = "SANDBOX_SHARED_DIR"
-_DEFAULT_SHARED_DIRECTORY = "/sandbox-shared"
-_ARTIFACT_DIRECTORY_NAME = "poster_agent"
 _POSTER_FILE_NAME = "poster.png"
 _REQUIRED_MOVIE_FIELDS = (
     "title",
@@ -24,26 +19,24 @@ _REQUIRED_MOVIE_FIELDS = (
 
 
 def run_poster_agent(poster_request: str) -> dict[str, object]:
-    """Generate one final movie poster and return shared artifact metadata."""
-    movie, illustration_path = _read_poster_request(poster_request)
+    """Generate one final movie poster and return A2A artifact metadata."""
+    movie, image_reference_base64 = _read_poster_request(poster_request)
     prompt = _build_poster_prompt(movie)
-    image_reference_base64 = _read_shared_image_base64(illustration_path)
     result_text = generate_image(prompt, image_reference_base64)
     result = _read_generate_image_result(result_text)
     image_base64 = result.pop("image_base64")
     image_bytes = _decode_base64_image(image_base64)
-    artifact_path = _write_shared_image_artifact(image_bytes)
 
     return {
         "success": True,
-        "artifact_path": artifact_path,
         "file_name": _POSTER_FILE_NAME,
+        "image_base64": image_base64,
         "mime_type": result.get("mime_type", "image/png"),
         "model": result.get("model", ""),
         "size": result.get("size", ""),
         "byte_count": len(image_bytes),
         "prompt": prompt,
-        "illustration_reference_path": illustration_path,
+        "illustration_reference": "image_reference_base64",
     }
 
 
@@ -57,14 +50,11 @@ def _read_poster_request(text: str) -> tuple[dict[str, str], str]:
         raise ValueError("Poster Agent request omitted movie details.")
     movie = _read_movie_details(movie_value)
 
-    illustration_value = data.get("illustration")
-    if not isinstance(illustration_value, dict):
-        raise ValueError("Poster Agent request omitted illustration metadata.")
-    artifact_path = illustration_value.get("artifact_path")
-    if not isinstance(artifact_path, str) or not artifact_path.strip():
-        raise ValueError("Poster Agent request omitted illustration artifact_path.")
+    image_reference_base64 = data.get("image_reference_base64")
+    if not isinstance(image_reference_base64, str) or not image_reference_base64:
+        raise ValueError("Poster Agent request omitted image_reference_base64.")
 
-    return movie, artifact_path.strip()
+    return movie, image_reference_base64.strip()
 
 
 def _read_movie_details(data: dict[object, object]) -> dict[str, str]:
@@ -93,14 +83,6 @@ def _build_poster_prompt(movie: dict[str, str]) -> str:
         f"Synopsis context: {movie['synopsis']} "
         f"Visual style direction: {movie['visual_style']}."
     )
-
-
-def _read_shared_image_base64(artifact_path: str) -> str:
-    image_path = _resolve_shared_path(artifact_path)
-    image_bytes = image_path.read_bytes()
-    if not image_bytes:
-        raise ValueError("Reference illustration artifact is empty.")
-    return base64.b64encode(image_bytes).decode("ascii")
 
 
 def _read_generate_image_result(result_text: str) -> dict[str, str]:
@@ -139,39 +121,6 @@ def _decode_base64_image(image_base64: str) -> bytes:
         return base64.b64decode(encoded_image, validate=True)
     except (binascii.Error, ValueError) as error:
         raise ValueError("Image data must be valid base64.") from error
-
-
-def _write_shared_image_artifact(image_bytes: bytes) -> str:
-    artifact_path = f"{_ARTIFACT_DIRECTORY_NAME}/{_POSTER_FILE_NAME}"
-    image_path = _resolve_shared_path(artifact_path)
-    image_path.parent.mkdir(parents=True, exist_ok=True)
-    image_path.write_bytes(image_bytes)
-    return artifact_path
-
-
-def _resolve_shared_path(relative_path: str) -> Path:
-    shared_directory = Path(
-        os.environ.get(
-            _SHARED_DIRECTORY_ENVIRONMENT_VARIABLE,
-            _DEFAULT_SHARED_DIRECTORY,
-        )
-    )
-    child_path = shared_directory / relative_path
-    resolved_parent = shared_directory.resolve(strict=False)
-    resolved_child = child_path.resolve(strict=False)
-    if not _is_relative_to(resolved_child, resolved_parent):
-        raise OSError(f"Refusing to access outside shared directory: {relative_path}")
-
-    return resolved_child
-
-
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-    except ValueError:
-        return False
-
-    return True
 
 
 def _extract_json_object(text: str) -> str:

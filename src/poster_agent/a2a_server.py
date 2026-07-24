@@ -27,7 +27,8 @@ _DEFAULT_POSTER_REQUEST = (
     '"synopsis": "A sailor follows silver maps across a sleeping sea.", '
     '"genre": "adventure", '
     '"visual_style": "moonlit ocean, silver-blue palette"}, '
-    '"illustration": {"artifact_path": "artist_agent/illustration.png"}}'
+    '"illustration": {"file_name": "illustration.png"}, '
+    '"image_reference_base64": "aW1hZ2U="}'
 )
 _TASKS: dict[str, dict[str, object]] = {}
 _TASK_LOCK = threading.Lock()

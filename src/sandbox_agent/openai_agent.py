@@ -21,17 +21,17 @@ for a dramatic illustrated poster. Treat the response as a JSON object with
 title, tagline, synopsis, genre, and visual_style fields.
 
 Call the get_movie_illustration tool exactly once with the movie details JSON.
-Treat the response as a JSON object with artifact_path, mime_type, model, size,
-byte_count, and prompt fields. Copy the artifact_path value to illustration.png
-with the save_shared_image_artifact tool. Do not call generate_image,
-generate_image_artifact, or save_image directly.
+Treat the response as a JSON object with file_name, mime_type, model, size,
+byte_count, prompt, and message fields. The tool saves illustration.png before
+returning. Do not call generate_image, generate_image_artifact, save_image, or
+save_shared_image_artifact directly.
 
 Call the get_movie_poster tool exactly once with a JSON object containing two
 fields: movie, set to the movie details object, and illustration, set to the
 illustration metadata object returned by get_movie_illustration. Treat the
-response as a JSON object with artifact_path, mime_type, model, size, byte_count,
-prompt, and illustration_reference_path fields. Copy the artifact_path value to
-poster.png with the save_shared_image_artifact tool.
+response as a JSON object with file_name, mime_type, model, size, byte_count,
+prompt, illustration_reference, and message fields. The tool saves poster.png
+before returning.
 
 Build a friendly, self-contained page that references illustration.png with an
 <img> element, references poster.png with another <img> element, and presents
@@ -56,7 +56,6 @@ def create_openai_agent(model: str = _DEFAULT_MODEL) -> Agent:
         get_movie_poster_tool,
         save_answer_tool,
         save_html_document_tool,
-        save_shared_image_artifact_tool,
     )
 
     return Agent(
@@ -65,16 +64,15 @@ def create_openai_agent(model: str = _DEFAULT_MODEL) -> Agent:
         instructions=(
             "You are a careful web page builder. Use the provided tools to "
             "retrieve structured movie details, request one illustration, "
-            "request one final poster, save exactly two image files, save "
-            "exactly one HTML file, and save the final status message. Do not "
-            "finish until all seven "
+            "request one final poster, save exactly one HTML file, and save "
+            "the final status message. Do not "
+            "finish until all five "
             "tool calls have succeeded."
         ),
         tools=[
             get_movie_details_tool,
             get_movie_illustration_tool,
             get_movie_poster_tool,
-            save_shared_image_artifact_tool,
             save_html_document_tool,
             save_answer_tool,
         ],

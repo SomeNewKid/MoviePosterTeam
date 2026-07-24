@@ -110,7 +110,9 @@ def send_text_task_and_wait_for_text_artifact(
 
     state = _read_task_state(task)
     if state != "TASK_STATE_COMPLETED":
-        raise RuntimeError(f"A2A task {task_id} finished with state {state}.")
+        message = _read_task_status_message(task)
+        detail = f": {message}" if message else ""
+        raise RuntimeError(f"A2A task {task_id} finished with state {state}{detail}.")
 
     return read_task_text_artifact(task)
 
@@ -251,6 +253,27 @@ def _read_task_state(task: dict[str, object]) -> str:
         raise RuntimeError("A2A task result did not contain status state.")
 
     return state
+
+
+def _read_task_status_message(task: dict[str, object]) -> str:
+    status = task.get("status")
+    if not isinstance(status, dict):
+        return ""
+
+    message = status.get("message")
+    if not isinstance(message, dict):
+        return ""
+
+    parts = message.get("parts")
+    if not isinstance(parts, list):
+        return ""
+
+    text_parts = [
+        text
+        for part in parts
+        if isinstance(part, dict) and isinstance((text := part.get("text")), str)
+    ]
+    return "\n\n".join(text_parts).strip()
 
 
 def _urlopen_no_proxy(
