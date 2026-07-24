@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 
 from poster_agent.a2a_server import _handle_json_rpc_request
 from poster_agent.openai_agent import run_poster_agent
@@ -51,7 +52,7 @@ def test_run_poster_agent_uses_illustration_reference(
 
 
 def test_a2a_message_send_returns_poster_json(monkeypatch) -> None:
-    """Verify the Poster Agent A2A surface returns poster metadata text."""
+    """Verify the Poster Agent A2A surface completes a poster task."""
 
     def fake_run_poster_agent(poster_request: str) -> dict[str, object]:
         request = json.loads(poster_request)
@@ -89,12 +90,65 @@ def test_a2a_message_send_returns_poster_json(monkeypatch) -> None:
 
     result = response["result"]
     assert isinstance(result, dict)
-    parts = result["parts"]
+    assert result["kind"] == "task"
+    status = result["status"]
+    assert isinstance(status, dict)
+    assert status["state"] == "TASK_STATE_SUBMITTED"
+    task_id = result["id"]
+    assert isinstance(task_id, str)
+
+    for _ in range(50):
+        task_response = _handle_json_rpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": "request-2",
+                "method": "tasks/get",
+                "params": {
+                    "id": task_id,
+                    "historyLength": 0,
+                },
+            }
+        )
+        task = task_response["result"]
+        assert isinstance(task, dict)
+        status = task["status"]
+        assert isinstance(status, dict)
+        if status["state"] == "TASK_STATE_COMPLETED":
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("Poster task did not complete.")
+
+    artifacts = task["artifacts"]
+    assert isinstance(artifacts, list)
+    artifact = artifacts[0]
+    assert isinstance(artifact, dict)
+    parts = artifact["parts"]
     assert isinstance(parts, list)
-    poster = json.loads(parts[0]["text"])
+    part = parts[0]
+    assert isinstance(part, dict)
+    poster = json.loads(part["text"])
     assert poster["artifact_path"] == "poster_agent/poster.png"
     assert "image_base64" not in poster
-    assert parts[0]["metadata"] == {"mimeType": "application/json"}
+    assert part["metadata"] == {"mimeType": "application/json"}
+
+
+def test_a2a_tasks_get_rejects_unknown_task_id() -> None:
+    """Verify unknown Poster Agent tasks return a JSON-RPC error."""
+    response = _handle_json_rpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": "request-3",
+            "method": "tasks/get",
+            "params": {
+                "id": "missing-task",
+            },
+        }
+    )
+
+    error = response["error"]
+    assert isinstance(error, dict)
+    assert error["code"] == -32001
 
 
 def _poster_request_json() -> str:

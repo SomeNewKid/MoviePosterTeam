@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 _DEFAULT_MODEL = "gpt-4.1-mini"
 _WRITER_PROMPT_TEMPLATE = """
-Create one original movie concept for a poster-generation workflow.
+Create one original movie concept for a romantic comedy.
 
 Creative brief:
 {brief}

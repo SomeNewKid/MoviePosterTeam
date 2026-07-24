@@ -52,6 +52,7 @@ _SUPPORTED_CONTAINER_CAPABILITIES = {
     "shell_access",
 }
 _SUPPORTED_APPLICATION_CAPABILITIES = {
+    "a2a",
     "anthropic_claude",
     "anthropic_python",
     "crewai",
@@ -1489,6 +1490,7 @@ def _validate_agent_network_requirements(
         return
 
     networked_application_capabilities = {
+        "a2a",
         "anthropic_claude",
         "anthropic_python",
         "crewai",

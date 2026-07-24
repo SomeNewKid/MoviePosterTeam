@@ -316,20 +316,23 @@ def test_get_movie_details_calls_writer_agent(monkeypatch) -> None:
 
 
 def test_get_movie_illustration_calls_artist_agent(monkeypatch) -> None:
-    """Verify illustration requests are sent to the artist A2A agent."""
+    """Verify illustration requests are sent as artist A2A tasks."""
     calls = []
 
     def fake_read_card(base_url: str) -> dict[str, object]:
         calls.append(("card", base_url))
         return {"url": "http://artist-agent:8080/a2a"}
 
-    def fake_send_message(endpoint_url: str, text: str, request_id: str) -> str:
-        calls.append(("message", endpoint_url, text, request_id))
+    def fake_send_task(endpoint_url: str, text: str, request_id: str) -> str:
+        calls.append(("task", endpoint_url, text, request_id))
         return '{"artifact_path": "artist_agent/illustration.png"}'
 
     monkeypatch.setenv("ARTIST_AGENT_URL", "http://artist-agent:8080")
     monkeypatch.setattr("sandbox_agent.tools.read_agent_card", fake_read_card)
-    monkeypatch.setattr("sandbox_agent.tools.send_text_message", fake_send_message)
+    monkeypatch.setattr(
+        "sandbox_agent.tools.send_text_task_and_wait_for_text_artifact",
+        fake_send_task,
+    )
 
     movie_details = '{"title": "Moon Harbor"}'
     result = get_movie_illustration(movie_details)
@@ -338,29 +341,32 @@ def test_get_movie_illustration_calls_artist_agent(monkeypatch) -> None:
     assert calls == [
         ("card", "http://artist-agent:8080"),
         (
-            "message",
+            "task",
             "http://artist-agent:8080/a2a",
             movie_details,
-            "artist-agent-request",
+            "artist-agent-task-request",
         ),
     ]
 
 
 def test_get_movie_poster_calls_poster_agent(monkeypatch) -> None:
-    """Verify poster requests are sent to the poster A2A agent."""
+    """Verify poster requests are sent as poster A2A tasks."""
     calls = []
 
     def fake_read_card(base_url: str) -> dict[str, object]:
         calls.append(("card", base_url))
         return {"url": "http://poster-agent:8080/a2a"}
 
-    def fake_send_message(endpoint_url: str, text: str, request_id: str) -> str:
-        calls.append(("message", endpoint_url, text, request_id))
+    def fake_send_task(endpoint_url: str, text: str, request_id: str) -> str:
+        calls.append(("task", endpoint_url, text, request_id))
         return '{"artifact_path": "poster_agent/poster.png"}'
 
     monkeypatch.setenv("POSTER_AGENT_URL", "http://poster-agent:8080")
     monkeypatch.setattr("sandbox_agent.tools.read_agent_card", fake_read_card)
-    monkeypatch.setattr("sandbox_agent.tools.send_text_message", fake_send_message)
+    monkeypatch.setattr(
+        "sandbox_agent.tools.send_text_task_and_wait_for_text_artifact",
+        fake_send_task,
+    )
 
     poster_request = '{"movie": {"title": "Moon Harbor"}}'
     result = get_movie_poster(poster_request)
@@ -369,10 +375,10 @@ def test_get_movie_poster_calls_poster_agent(monkeypatch) -> None:
     assert calls == [
         ("card", "http://poster-agent:8080"),
         (
-            "message",
+            "task",
             "http://poster-agent:8080/a2a",
             poster_request,
-            "poster-agent-request",
+            "poster-agent-task-request",
         ),
     ]
 

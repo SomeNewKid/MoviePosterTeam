@@ -14,6 +14,7 @@ from a2a_support.client import (
     read_agent_card,
     read_agent_endpoint_url,
     send_text_message,
+    send_text_task_and_wait_for_text_artifact,
 )
 
 _OUTPUT_DIRECTORY = Path("/sandbox-output")
@@ -269,32 +270,32 @@ def get_movie_details(
 
 
 def get_movie_illustration(movie_details: str) -> str:
-    """Return generated illustration JSON from the Artist Agent."""
+    """Return generated illustration JSON from the Artist Agent task."""
     artist_base_url = os.environ.get(
         _ARTIST_AGENT_URL_ENVIRONMENT_VARIABLE,
         _DEFAULT_ARTIST_AGENT_URL,
     )
     agent_card = read_agent_card(artist_base_url)
     endpoint_url = read_agent_endpoint_url(agent_card)
-    return send_text_message(
+    return send_text_task_and_wait_for_text_artifact(
         endpoint_url,
         movie_details,
-        request_id="artist-agent-request",
+        request_id="artist-agent-task-request",
     )
 
 
 def get_movie_poster(poster_request: str) -> str:
-    """Return generated poster JSON from the Poster Agent."""
+    """Return generated poster JSON from the Poster Agent task."""
     poster_base_url = os.environ.get(
         _POSTER_AGENT_URL_ENVIRONMENT_VARIABLE,
         _DEFAULT_POSTER_AGENT_URL,
     )
     agent_card = read_agent_card(poster_base_url)
     endpoint_url = read_agent_endpoint_url(agent_card)
-    return send_text_message(
+    return send_text_task_and_wait_for_text_artifact(
         endpoint_url,
         poster_request,
-        request_id="poster-agent-request",
+        request_id="poster-agent-task-request",
     )
 
 

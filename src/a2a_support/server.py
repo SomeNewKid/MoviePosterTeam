@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler
 
 
@@ -72,6 +73,89 @@ def read_message_text(params: object) -> str:
     return "\n\n".join(text_parts).strip()
 
 
+def read_task_id(params: object) -> str:
+    """Read a task id from JSON-RPC tasks/get params."""
+    if not isinstance(params, dict):
+        raise ValueError("A2A tasks/get params must be an object.")
+
+    task_id = params.get("id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise ValueError("A2A tasks/get params must include a non-empty id.")
+
+    return task_id.strip()
+
+
+def build_task(
+    task_id: str,
+    context_id: str,
+    state: str,
+    message_text: str | None = None,
+    artifacts: tuple[dict[str, object], ...] = (),
+) -> dict[str, object]:
+    """Build a small A2A Task object."""
+    status: dict[str, object] = {
+        "state": state,
+        "timestamp": _utc_timestamp(),
+    }
+    if message_text is not None:
+        status["message"] = {
+            "kind": "message",
+            "messageId": f"{task_id}-status",
+            "role": "agent",
+            "parts": [
+                {
+                    "kind": "text",
+                    "text": message_text,
+                }
+            ],
+        }
+
+    task: dict[str, object] = {
+        "kind": "task",
+        "id": task_id,
+        "contextId": context_id,
+        "status": status,
+    }
+    if artifacts:
+        task["artifacts"] = list(artifacts)
+
+    return task
+
+
+def build_text_artifact(
+    artifact_id: str,
+    name: str,
+    text: str,
+    mime_type: str = "text/plain",
+) -> dict[str, object]:
+    """Build a small A2A text artifact."""
+    return {
+        "artifactId": artifact_id,
+        "name": name,
+        "parts": [
+            {
+                "kind": "text",
+                "text": text,
+                "metadata": {
+                    "mimeType": mime_type,
+                },
+            }
+        ],
+    }
+
+
+def json_rpc_result(
+    request_id: object,
+    result: dict[str, object],
+) -> dict[str, object]:
+    """Build a JSON-RPC success response."""
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": result,
+    }
+
+
 def json_rpc_text_result(
     request_id: object,
     text: str,
@@ -110,3 +194,7 @@ def json_rpc_error(
             "message": message,
         },
     }
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")

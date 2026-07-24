@@ -8,6 +8,7 @@ container_capabilities = [
 ]
 
 application_capabilities = [
+  "a2a",
   "image_artifacts",
   "mcp_client",
   "openai_agents",

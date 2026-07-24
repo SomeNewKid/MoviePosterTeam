@@ -32,6 +32,7 @@ _JINA_READER_CAPABILITY = "jina_reader"
 _CODE_EXECUTION_CAPABILITY = "code_execution"
 _HAPROXY_CAPABILITY = "haproxy"
 _OLLAMA_CAPABILITY = "ollama"
+_A2A_CAPABILITY = "a2a"
 _OPENAI_CAPABILITY = "openai"
 _OPENAI_AGENTS_CAPABILITY = "openai_agents"
 _ANTHROPIC_CLAUDE_CAPABILITY = "anthropic_claude"
@@ -79,6 +80,7 @@ _SUPPORTED_CAPABILITIES = {
     _CODE_EXECUTION_CAPABILITY,
     _HAPROXY_CAPABILITY,
     _OLLAMA_CAPABILITY,
+    _A2A_CAPABILITY,
     _OPENAI_CAPABILITY,
     _OPENAI_AGENTS_CAPABILITY,
     _ANTHROPIC_CLAUDE_CAPABILITY,
@@ -96,6 +98,7 @@ _SUPPORTED_CAPABILITIES = {
 }
 _HASH_LENGTH = 16
 _MCP_PACKAGE = "mcp==1.28.1"
+_A2A_SDK_PACKAGE = "a2a-sdk==1.1.1"
 _OPENAI_PACKAGE = "openai==2.45.0"
 _OPENAI_AGENTS_PACKAGE = "openai-agents==0.18.2"
 _CLAUDE_AGENT_SDK_PACKAGE = "claude-agent-sdk==0.2.120"
@@ -807,6 +810,7 @@ def _validate_network_settings(
 ) -> None:
     has_network = _NETWORK_CAPABILITY in capabilities
     openai_capabilities = {
+        _A2A_CAPABILITY,
         _OPENAI_CAPABILITY,
         _OPENAI_AGENTS_CAPABILITY,
         _BEEAI_CAPABILITY,
@@ -949,6 +953,8 @@ def _build_python_package_install_command(
     packages = []
     if spec.has_capability(_OPENAI_CAPABILITY):
         packages.append(_OPENAI_PACKAGE)
+    if spec.has_capability(_A2A_CAPABILITY):
+        packages.append(_A2A_SDK_PACKAGE)
     if spec.has_capability(_OPENAI_AGENTS_CAPABILITY):
         packages.append(_OPENAI_AGENTS_PACKAGE)
     if spec.has_capability(_MCP_CLIENT_CAPABILITY):

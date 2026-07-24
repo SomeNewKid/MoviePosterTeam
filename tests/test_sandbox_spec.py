@@ -447,6 +447,26 @@ def test_openai_agents_capability_requires_network(tmp_path: Path) -> None:
         load_sandbox_spec(spec_path)
 
 
+def test_a2a_capability_requires_network(tmp_path: Path) -> None:
+    """Verify A2A support cannot silently enable network access."""
+    spec_path = tmp_path / "sandbox_spec.toml"
+    spec_path.write_text(
+        "\n".join(
+            [
+                "schema_version = 1",
+                'capabilities = ["a2a"]',
+                "[squid_proxy]",
+                "allowed_domains = []",
+                "allowed_ip_addresses = []",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="requires the network capability"):
+        load_sandbox_spec(spec_path)
+
+
 def test_mcp_client_capability_requires_network(tmp_path: Path) -> None:
     """Verify MCP client support cannot silently enable network access."""
     spec_path = tmp_path / "sandbox_spec.toml"
@@ -1532,6 +1552,29 @@ def test_openai_agents_capability_resolves_required_runtime_support(
     dockerfile = generate_dockerfile(spec)
     assert "openai-agents==0.18.2" in dockerfile
     assert "openai==2.45.0" not in dockerfile
+
+
+def test_a2a_capability_installs_a2a_sdk(tmp_path: Path) -> None:
+    """Verify A2A support installs the Python SDK."""
+    spec_path = tmp_path / "sandbox_spec.toml"
+    spec_path.write_text(
+        "\n".join(
+            [
+                "schema_version = 1",
+                'capabilities = ["network", "a2a"]',
+                "[squid_proxy]",
+                "allowed_domains = []",
+                "allowed_ip_addresses = []",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    spec = load_sandbox_spec(spec_path)
+    dockerfile = generate_dockerfile(spec)
+
+    assert "a2a-sdk==1.1.1" in dockerfile
+    assert "openai-agents==0.18.2" not in dockerfile
 
 
 def test_image_artifacts_capability_resolves_image_file_limits(

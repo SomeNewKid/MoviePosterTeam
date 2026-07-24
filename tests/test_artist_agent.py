@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from artist_agent.a2a_server import _handle_json_rpc_request
 from artist_agent.openai_agent import run_artist_agent
@@ -57,7 +58,7 @@ def test_run_artist_agent_writes_shared_artifact_from_movie_json(
 
 
 def test_a2a_message_send_returns_illustration_json(monkeypatch) -> None:
-    """Verify the Artist Agent A2A surface returns illustration text."""
+    """Verify the Artist Agent A2A surface completes an illustration task."""
 
     def fake_run_artist_agent(movie_details: str) -> dict[str, object]:
         movie = json.loads(movie_details)
@@ -99,9 +100,62 @@ def test_a2a_message_send_returns_illustration_json(monkeypatch) -> None:
 
     result = response["result"]
     assert isinstance(result, dict)
-    parts = result["parts"]
+    assert result["kind"] == "task"
+    status = result["status"]
+    assert isinstance(status, dict)
+    assert status["state"] == "TASK_STATE_SUBMITTED"
+    task_id = result["id"]
+    assert isinstance(task_id, str)
+
+    for _ in range(50):
+        task_response = _handle_json_rpc_request(
+            {
+                "jsonrpc": "2.0",
+                "id": "request-2",
+                "method": "tasks/get",
+                "params": {
+                    "id": task_id,
+                    "historyLength": 0,
+                },
+            }
+        )
+        task = task_response["result"]
+        assert isinstance(task, dict)
+        status = task["status"]
+        assert isinstance(status, dict)
+        if status["state"] == "TASK_STATE_COMPLETED":
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("Artist task did not complete.")
+
+    artifacts = task["artifacts"]
+    assert isinstance(artifacts, list)
+    artifact = artifacts[0]
+    assert isinstance(artifact, dict)
+    parts = artifact["parts"]
     assert isinstance(parts, list)
-    illustration = json.loads(parts[0]["text"])
+    part = parts[0]
+    assert isinstance(part, dict)
+    illustration = json.loads(part["text"])
     assert illustration["artifact_path"] == "artist_agent/illustration.png"
     assert "image_base64" not in illustration
-    assert parts[0]["metadata"] == {"mimeType": "application/json"}
+    assert part["metadata"] == {"mimeType": "application/json"}
+
+
+def test_a2a_tasks_get_rejects_unknown_task_id() -> None:
+    """Verify unknown Artist Agent tasks return a JSON-RPC error."""
+    response = _handle_json_rpc_request(
+        {
+            "jsonrpc": "2.0",
+            "id": "request-3",
+            "method": "tasks/get",
+            "params": {
+                "id": "missing-task",
+            },
+        }
+    )
+
+    error = response["error"]
+    assert isinstance(error, dict)
+    assert error["code"] == -32001

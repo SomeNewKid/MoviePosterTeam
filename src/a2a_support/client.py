@@ -3,8 +3,18 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.request
 from typing import Any
+
+_TERMINAL_TASK_STATES = frozenset(
+    {
+        "TASK_STATE_COMPLETED",
+        "TASK_STATE_FAILED",
+        "TASK_STATE_CANCELED",
+        "TASK_STATE_REJECTED",
+    }
+)
 
 
 def read_agent_card(base_url: str, timeout: int = 10) -> dict[str, object]:
@@ -66,6 +76,95 @@ def send_text_message(
     return read_message_text_result(response_data.get("result"))
 
 
+def send_text_task_and_wait_for_text_artifact(
+    endpoint_url: str,
+    text: str,
+    request_id: str = "a2a-task-request",
+    timeout_seconds: int = 300,
+    poll_interval_seconds: float = 1.0,
+) -> str:
+    """Start an A2A task with text input and return its first text artifact."""
+    task = send_text_task(
+        endpoint_url,
+        text,
+        request_id=request_id,
+        timeout=min(timeout_seconds, 60),
+    )
+    task_id = _read_task_id(task)
+    deadline = time.monotonic() + timeout_seconds
+
+    while True:
+        state = _read_task_state(task)
+        if state in _TERMINAL_TASK_STATES:
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"A2A task {task_id} did not complete before timeout.")
+
+        time.sleep(poll_interval_seconds)
+        task = get_task(
+            endpoint_url,
+            task_id,
+            request_id=f"{request_id}-get",
+            timeout=min(timeout_seconds, 60),
+        )
+
+    state = _read_task_state(task)
+    if state != "TASK_STATE_COMPLETED":
+        raise RuntimeError(f"A2A task {task_id} finished with state {state}.")
+
+    return read_task_text_artifact(task)
+
+
+def send_text_task(
+    endpoint_url: str,
+    text: str,
+    request_id: str = "a2a-task-request",
+    timeout: int = 60,
+) -> dict[str, object]:
+    """Send a JSON-RPC message/send request and return the resulting Task."""
+    request_body = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "message/send",
+        "params": {
+            "message": {
+                "role": "user",
+                "parts": [
+                    {
+                        "kind": "text",
+                        "text": text,
+                    }
+                ],
+            },
+            "configuration": {
+                "blocking": False,
+            },
+        },
+    }
+    response_data = _post_json_rpc(endpoint_url, request_body, timeout)
+    return read_task_result(response_data.get("result"))
+
+
+def get_task(
+    endpoint_url: str,
+    task_id: str,
+    request_id: str = "a2a-task-get-request",
+    timeout: int = 10,
+) -> dict[str, object]:
+    """Call JSON-RPC tasks/get and return the resulting Task."""
+    request_body = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "tasks/get",
+        "params": {
+            "id": task_id,
+            "historyLength": 0,
+        },
+    }
+    response_data = _post_json_rpc(endpoint_url, request_body, timeout)
+    return read_task_result(response_data.get("result"))
+
+
 def read_message_text_result(result: object) -> str:
     """Read the first text part from a JSON-RPC message result."""
     if not isinstance(result, dict):
@@ -80,6 +179,78 @@ def read_message_text_result(result: object) -> str:
             return str(part["text"])
 
     raise RuntimeError("A2A result did not contain text.")
+
+
+def read_task_result(result: object) -> dict[str, object]:
+    """Validate and return a JSON-RPC Task result."""
+    if not isinstance(result, dict):
+        raise RuntimeError("A2A task result must be an object.")
+    if result.get("kind") != "task":
+        raise RuntimeError("A2A task result must have kind 'task'.")
+
+    _read_task_id(result)
+    _read_task_state(result)
+    return result
+
+
+def read_task_text_artifact(task: dict[str, object]) -> str:
+    """Read the first text part from an A2A Task artifact."""
+    artifacts = task.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise RuntimeError("A2A task did not contain artifacts.")
+
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        parts = artifact.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                return str(part["text"])
+
+    raise RuntimeError("A2A task artifacts did not contain text.")
+
+
+def _post_json_rpc(
+    endpoint_url: str,
+    request_body: dict[str, object],
+    timeout: int,
+) -> dict[str, object]:
+    request = urllib.request.Request(
+        endpoint_url,
+        data=json.dumps(request_body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with _urlopen_no_proxy(request, timeout=timeout) as response:
+        response_data = json.loads(response.read().decode("utf-8"))
+    if not isinstance(response_data, dict):
+        raise RuntimeError("A2A response must be a JSON object.")
+    if "error" in response_data:
+        raise RuntimeError(f"A2A error: {response_data['error']}")
+
+    return response_data
+
+
+def _read_task_id(task: dict[str, object]) -> str:
+    task_id = task.get("id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise RuntimeError("A2A task result did not contain an id.")
+
+    return task_id
+
+
+def _read_task_state(task: dict[str, object]) -> str:
+    status = task.get("status")
+    if not isinstance(status, dict):
+        raise RuntimeError("A2A task result did not contain status.")
+
+    state = status.get("state")
+    if not isinstance(state, str) or not state.strip():
+        raise RuntimeError("A2A task result did not contain status state.")
+
+    return state
 
 
 def _urlopen_no_proxy(

@@ -263,21 +263,21 @@ def test_default_sandbox_run_spec_starts_support_agents_before_entry_agent() -> 
 
 def test_default_shared_artifact_agents_declare_shared_volume() -> None:
     """Verify agents that exchange image artifacts opt into shared storage."""
+    writer_spec = load_agent_spec(Path("src") / "writer_agent" / "sandbox_spec.toml")
     artist_spec = load_agent_spec(Path("src") / "artist_agent" / "sandbox_spec.toml")
     poster_spec = load_agent_spec(Path("src") / "poster_agent" / "sandbox_spec.toml")
     sandbox_spec = load_agent_spec(Path("src") / "sandbox_agent" / "sandbox_spec.toml")
 
+    assert "a2a" in writer_spec.application_capabilities
     assert "shared_volume" in artist_spec.container_capabilities
+    assert "a2a" in artist_spec.application_capabilities
     assert "image_artifacts" in artist_spec.application_capabilities
     assert "shared_volume" in poster_spec.container_capabilities
+    assert "a2a" in poster_spec.application_capabilities
     assert "image_artifacts" in poster_spec.application_capabilities
     assert "shared_volume" in sandbox_spec.container_capabilities
-    assert (
-        "shared_volume"
-        not in load_agent_spec(
-            Path("src") / "writer_agent" / "sandbox_spec.toml"
-        ).container_capabilities
-    )
+    assert "a2a" in sandbox_spec.application_capabilities
+    assert "shared_volume" not in writer_spec.container_capabilities
 
 
 def test_load_sandbox_run_spec_rejects_unknown_top_level_keys(
@@ -602,7 +602,7 @@ def test_load_agent_spec_networked_application_capabilities_require_network(
                 "schema_version = 1",
                 'agent_id = "agent_1"',
                 'module = "sandbox_agent"',
-                'application_capabilities = ["openai_agents"]',
+                'application_capabilities = ["a2a"]',
             ]
         ),
         encoding="utf-8",

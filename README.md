@@ -1,18 +1,20 @@
-# TwoAgentSandbox
+# MoviePosterTeam
 
-TwoAgentSandbox is a Python command-line project for running AI agents inside
-hardened, disposable Docker containers on a shared Docker network.
+MoviePosterTeam is a Python command-line project for running a small
+movie-poster multi-agent workflow inside hardened, disposable Docker containers
+on a shared Docker network.
 
 The current default workload runs four agents:
 
 - `writer_agent`: a supporting A2A agent. It creates structured movie JSON with
   a title, tagline, synopsis, genre, and visual style.
-- `artist_agent`: a supporting A2A agent. It asks the MCP sidecar to generate
-  one illustration from the movie details, writes it to the shared artifact
-  volume, and returns compact artifact metadata.
-- `poster_agent`: a supporting A2A agent. It uses the illustration as a
+- `artist_agent`: a supporting A2A task agent. It asks the MCP sidecar to
+  generate one illustration from the movie details, writes it to the shared
+  artifact volume, and returns compact artifact metadata as a task artifact.
+- `poster_agent`: a supporting A2A task agent. It uses the illustration as a
   reference image, asks the MCP sidecar to generate a final movie poster, writes
-  it to the shared artifact volume, and returns compact artifact metadata.
+  it to the shared artifact volume, and returns compact artifact metadata as a
+  task artifact.
 - `sandbox_agent`: the entry agent. It asks `writer_agent` for movie details,
   asks `artist_agent` for the illustration, asks `poster_agent` for the final
   poster, and owns the final `index.html`, `illustration.png`, and `poster.png`
@@ -45,17 +47,18 @@ On each default run:
    A2A HTTP services.
 7. It runs `sandbox_agent` as the foreground entry agent.
 8. `sandbox_agent` asks `writer_agent` for structured movie JSON.
-9. `sandbox_agent` gives the movie JSON to `artist_agent`.
+9. `sandbox_agent` gives the movie JSON to `artist_agent` by starting an A2A
+   task and polling `tasks/get`.
 10. `artist_agent` calls the MCP tool `generate_image` to create one cinematic
     illustration, writes it under `/sandbox-shared/artist_agent/`, and returns
-    compact artifact metadata.
+    compact artifact metadata as a task artifact.
 11. `sandbox_agent` gives the movie JSON and illustration metadata to
-    `poster_agent`.
+    `poster_agent` by starting another A2A task and polling `tasks/get`.
 12. `poster_agent` calls the MCP tool `generate_image` with the illustration as
     a reference image to create a complete movie poster containing the movie
     name, tagline, illustration, and poster-style design content. It writes the
     poster under `/sandbox-shared/poster_agent/` and returns compact artifact
-    metadata.
+    metadata as a task artifact.
 13. `sandbox_agent` saves the generated illustration as
     `/sandbox-output/site/illustration.png`.
 14. `sandbox_agent` saves the generated poster as
@@ -125,7 +128,6 @@ default_tools = []
 default_resources = []
 container_capabilities = [
   "network",
-  "shared_volume",
 ]
 application_capabilities = [
   "openai",
@@ -152,7 +154,8 @@ additional non-entry agents, those are started first as long-running supporting
 HTTP agents. When the entry agent exits, the whole run is considered complete.
 
 Sequential multi-agent execution is also supported by the planner/runtime. The
-default project now uses the entry-agent model with two supporting A2A services.
+default project now uses the entry-agent model with three supporting A2A
+services.
 
 ## Agent Specs
 
@@ -171,6 +174,7 @@ container_capabilities = [
 ]
 
 application_capabilities = [
+  "a2a",
   "image_artifacts",
   "mcp_client",
   "openai_agents",
@@ -201,6 +205,7 @@ container_capabilities = [
 ]
 
 application_capabilities = [
+  "a2a",
   "openai_agents",
 ]
 
@@ -218,9 +223,12 @@ module = "artist_agent"
 
 container_capabilities = [
   "network",
+  "shared_volume",
 ]
 
 application_capabilities = [
+  "a2a",
+  "image_artifacts",
   "mcp_client",
 ]
 
@@ -244,6 +252,7 @@ container_capabilities = [
 ]
 
 application_capabilities = [
+  "a2a",
   "image_artifacts",
   "mcp_client",
 ]
@@ -443,6 +452,7 @@ container names, IP addresses, sidecar exposure, and generated ACL intent.
 
 Supported container/application capabilities include:
 
+- `a2a`
 - `network`
 - `shared_volume`
 - `mcp_client`
@@ -464,9 +474,11 @@ Supported container/application capabilities include:
 - `microsoft_agent`
 - `otto_agent`
 
-Provider-backed capabilities can add provider domains and host environment
-variables. With the default GPT-backed workload, the agents use hosted OpenAI
-models and therefore need `OPENAI_API_KEY`.
+The `a2a` application capability installs `a2a-sdk` into the agent image and
+requires the `network` container capability. Provider-backed capabilities can
+add provider domains and host environment variables. With the default
+GPT-backed workload, the agents use hosted OpenAI models and therefore need
+`OPENAI_API_KEY`.
 
 ## Sandbox Probes
 
@@ -526,18 +538,20 @@ The project has nine main packages:
 
 - `a2a_support`: shared client and server helpers for the project's small A2A
   HTTP integrations, including Agent Card construction, JSON-RPC text messages,
-  and response parsing.
+  task polling, task artifacts, and response parsing.
 
 - `sandbox_agent`: the entry workload. It owns the OpenAI Agents SDK prompt,
   Writer, Artist, and Poster Agent A2A calls, local artifact saving, and final
   page creation.
 - `writer_agent`: the supporting OpenAI Agents SDK workload and small A2A HTTP
   server. It returns structured movie JSON for downstream poster generation.
-- `artist_agent`: the supporting A2A workload that calls MCP `generate_image`,
-  writes shared image artifacts, and returns compact artifact metadata.
-- `poster_agent`: the supporting A2A workload that calls MCP `generate_image`
-  with the illustration as a reference image, writes the final shared poster
-  artifact, and returns compact artifact metadata.
+- `artist_agent`: the supporting A2A task workload that calls MCP
+  `generate_image`, writes shared image artifacts, and returns compact artifact
+  metadata through `tasks/get`.
+- `poster_agent`: the supporting A2A task workload that calls MCP
+  `generate_image` with the illustration as a reference image, writes the final
+  shared poster artifact, and returns compact artifact metadata through
+  `tasks/get`.
 - `mcp_sidecar`: the MCP server container workload. It owns local MCP resources,
   local MCP tools, OpenAI image generation, MariaDB access, Microsoft Learn
   proxy tools, Jina Reader client logic, code-execution client logic, and audit
@@ -596,8 +610,8 @@ Docker host
 
 ```text
 src/a2a_support/
-  client.py                    A2A Agent Card and message/send client helpers
-  server.py                    A2A Agent Card and JSON-RPC response helpers
+  client.py                    A2A Agent Card, message/send, and task client helpers
+  server.py                    A2A Agent Card, task, and JSON-RPC response helpers
 
 src/sandbox_agent/
   cli.py                       Host delegation and entry workload
@@ -614,14 +628,14 @@ src/writer_agent/
   sandbox_spec.toml            Supporting writer agent declaration
 
 src/artist_agent/
-  a2a_server.py                Minimal A2A HTTP server
+  a2a_server.py                Minimal A2A HTTP task server
   cli.py                       Stdin/stdout and A2A server entry point
   openai_agent.py              Movie illustration prompt and MCP image workflow
   sandbox_spec.toml            Supporting artist agent declaration
   tools.py                     MCP generate_image client wrapper
 
 src/poster_agent/
-  a2a_server.py                Minimal A2A HTTP server
+  a2a_server.py                Minimal A2A HTTP task server
   cli.py                       Stdin/stdout and A2A server entry point
   openai_agent.py              Poster prompt and MCP reference-image workflow
   sandbox_spec.toml            Supporting poster agent declaration
@@ -654,7 +668,7 @@ src/sandbox_tester/
 
 ## Notes
 
-TwoAgentSandbox is a learning and hardening exercise, not a security proof. The
+MoviePosterTeam is a learning and hardening exercise, not a security proof. The
 container policy reduces accidental host exposure and makes required capability
 softening visible, but Docker, Landlock, seccomp, Squid, MCP tool boundaries,
 sidecar behavior, and Python runtime guards should not be interpreted as a
@@ -666,7 +680,7 @@ Run artifacts under `.docker_sandbox/runs` are ignored by Git.
 
 ## Third-Party Notices
 
-This project uses third-party packages including `mcp`, `openai`,
+This project uses third-party packages including `a2a-sdk`, `mcp`, `openai`,
 `openai-agents`, `pillow`, and `pymysql`. It also uses Docker images such as
 `python:3.12-slim`, `ubuntu/squid:latest`, `haproxy:latest`,
 `ollama/ollama:latest`, and `ghcr.io/jina-ai/reader:oss`. See each package and
